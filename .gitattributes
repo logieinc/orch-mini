@@ -1,0 +1,10 @@
+# Los .sh y archivos del repo deben quedarse con LF aún clonados en Windows.
+*.sh text eol=lf
+*.cjs text eol=lf
+*.ts text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+# .ps1 también queda con LF — PowerShell lo lee bien.
+*.ps1 text eol=lf

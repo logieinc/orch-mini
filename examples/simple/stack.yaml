@@ -1,0 +1,44 @@
+# Stack de ejemplo: api Node + frontend Next + postgres detrás de un gateway nginx.
+# Todo se accede desde http://localhost:8080
+name: simple-app
+
+gateway:
+  port: 8080
+  routes:
+    - path: /api
+      service: api
+    - path: /
+      service: web
+
+services:
+  api:
+    repo: github.com/example/simple-api
+    build: ./Dockerfile
+    port: 3000
+    env:
+      NODE_ENV: development
+      DATABASE_URL: postgres://app:app@db:5432/app
+      PORT: 3000
+    needs:
+      - db
+
+  web:
+    repo: github.com/example/simple-web
+    build: ./Dockerfile
+    port: 3001
+    env:
+      NODE_ENV: development
+      API_URL: http://api:3000
+      PUBLIC_API_URL: http://localhost:8080/api
+      PORT: 3001
+
+  db:
+    image: postgres:16-alpine
+    port: 5432
+    expose_host: 5433
+    env:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    volumes:
+      - simple-app-db:/var/lib/postgresql/data
