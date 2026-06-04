@@ -99,7 +99,12 @@ export function renderInfo(loaded: LoadedStack): string {
     const maxKey = Math.max(...concerns.map((c) => `${c.service}.${c.key}`.length));
     for (const c of concerns) {
       const k = `${c.service}.${c.key}`.padEnd(maxKey + 2);
-      out.push(`  ${k}${C.dim}${c.reason}${C.reset}`);
+      const tag = c.required ? `${C.red}[required]${C.reset} ` : '';
+      out.push(`  ${tag}${k}${C.dim}${c.reason}${C.reset}`);
+      if (c.description) {
+        // Indenta la descripción debajo, alineada con el nombre del key.
+        out.push(`  ${' '.repeat(maxKey + 2 + (c.required ? 11 : 0))}${C.dim}↳ ${c.description}${C.reset}`);
+      }
     }
   } else {
     out.push('');
@@ -170,31 +175,47 @@ function collectDatabases(stack: Stack): Array<{ service: string; names: string[
   return out;
 }
 
-type Concern = { service: string; key: string; reason: string };
+type Concern = {
+  service: string;
+  key: string;
+  reason: string;
+  description?: string;
+  required?: boolean;
+};
 
-function collectConcerns(stack: Stack, workDir: string): Concern[] {
+function collectConcerns(stack: Stack, _workDir: string): Concern[] {
   const out: Concern[] = [];
 
   for (const [svcName, svc] of Object.entries(stack.services)) {
+    const meta = svc.env_meta ?? {};
     for (const [k, vRaw] of Object.entries(svc.env ?? {})) {
       const v = String(vRaw);
+      const m = meta[k] ?? {};
 
-      if (v === '') {
-        out.push({ service: svcName, key: k, reason: 'vacío' });
-        continue;
+      let reason: string | null = null;
+      if (v === '') reason = 'vacío';
+      else if (PLACEHOLDER_PATTERNS.some((re) => re.test(v))) {
+        reason = `placeholder: "${truncate(v, 30)}"`;
+      } else if (m.required === true) {
+        // Marcado como required en la metadata, pero ya tiene valor — no es concern.
       }
 
-      if (PLACEHOLDER_PATTERNS.some((re) => re.test(v))) {
-        out.push({ service: svcName, key: k, reason: `placeholder: "${truncate(v, 30)}"` });
-        continue;
+      if (reason !== null) {
+        const concern: Concern = { service: svcName, key: k, reason };
+        if (m.description) concern.description = m.description;
+        if (m.required) concern.required = m.required;
+        out.push(concern);
       }
-
-      // ${file:...} ya fue expandido en el parse — si llegamos acá y no
-      // existe, el parse hubiera tirado error. No re-chequear acá.
     }
   }
 
-  return out;
+  // Required arriba (los más urgentes), después el resto.
+  return out.sort((a, b) => {
+    if ((b.required ? 1 : 0) - (a.required ? 1 : 0) !== 0) {
+      return (b.required ? 1 : 0) - (a.required ? 1 : 0);
+    }
+    return 0;
+  });
 }
 
 function truncate(s: string, max: number): string {

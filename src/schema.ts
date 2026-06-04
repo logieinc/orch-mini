@@ -8,6 +8,15 @@ const serviceNameSchema = z
 const envValueSchema = z.union([z.string(), z.number(), z.boolean()]).transform(String);
 const envMapSchema = z.record(z.string(), envValueSchema);
 
+// Metadata opcional por env var: description + required.
+// El parser pre-normaliza el formato mixed (string vs {value,description,required})
+// dejando `env` como Record<string,string> y `env_meta` como esta estructura.
+const envMetaEntrySchema = z.object({
+  description: z.string().optional(),
+  required: z.boolean().optional(),
+});
+const envMetaMapSchema = z.record(z.string(), envMetaEntrySchema);
+
 const routeSchema = z.object({
   path: z.string().min(1),
   service: serviceNameSchema,
@@ -44,6 +53,7 @@ const serviceSchema = z
     port: z.number().int().positive().optional(),
     debug_port: z.number().int().positive().optional(),
     env: envMapSchema.optional(),
+    env_meta: envMetaMapSchema.optional(),
     needs: z.array(serviceNameSchema).optional(),
     expose_host: z.number().int().positive().optional(),
     volumes: z.array(z.string()).optional(),

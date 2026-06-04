@@ -49,7 +49,11 @@ export function loadStack(stackPath?: string): LoadedStack {
   // Expandir ${file:path} antes de validar — paths se resuelven relativo al workDir.
   const expanded = expandFileRefs(doc, workDir);
 
-  const result = stackSchema.safeParse(expanded);
+  // Normalizar el formato mixed de env (string | {value, description, required})
+  // a dos campos planos: env (Record<string,string>) + env_meta (descripciones).
+  const normalized = normalizeEnvMetadata(expanded);
+
+  const result = stackSchema.safeParse(normalized);
   if (!result.success) {
     throw new Error(formatZodError(result.error, absPath));
   }
@@ -72,6 +76,46 @@ function computeWorkspaceRoot(workDir: string): string {
     return dirname(workDir);
   }
   return workDir;
+}
+
+// Recorre stack.services.*.env y si algún valor es un objeto con shape
+// { value, description?, required? }, splittea: env[k] = String(value),
+// env_meta[k] = { description?, required? }. Los valores que ya son string,
+// number o boolean pasan tal cual.
+function normalizeEnvMetadata(doc: unknown): unknown {
+  if (!isPlainObject(doc)) return doc;
+  const services = isPlainObject(doc.services) ? doc.services : undefined;
+  if (!services) return doc;
+
+  const newServices: Record<string, unknown> = {};
+  for (const [svcName, svc] of Object.entries(services)) {
+    if (!isPlainObject(svc) || !isPlainObject(svc.env)) {
+      newServices[svcName] = svc;
+      continue;
+    }
+    const env: Record<string, unknown> = {};
+    const env_meta: Record<string, { description?: string; required?: boolean }> = {};
+    for (const [k, v] of Object.entries(svc.env)) {
+      if (isPlainObject(v) && ('value' in v || 'description' in v || 'required' in v)) {
+        env[k] = v.value ?? '';
+        const meta: { description?: string; required?: boolean } = {};
+        if (typeof v.description === 'string') meta.description = v.description;
+        if (typeof v.required === 'boolean') meta.required = v.required;
+        if (Object.keys(meta).length > 0) env_meta[k] = meta;
+      } else {
+        env[k] = v;
+      }
+    }
+    const newSvc: Record<string, unknown> = { ...svc, env };
+    if (Object.keys(env_meta).length > 0) newSvc.env_meta = env_meta;
+    newServices[svcName] = newSvc;
+  }
+
+  return { ...doc, services: newServices };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function formatZodError(err: z.ZodError, source: string): string {
