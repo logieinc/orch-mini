@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { initStack } from './init.js';
+import { renderInfo } from './info.js';
 import { loadStack, type LoadedStack } from './parser.js';
 import { renderCompose } from './renderer/compose.js';
 import { renderDbInit } from './renderer/db-init.js';
@@ -16,6 +17,7 @@ const COMMANDS = [
   'sync',
   'gen',
   'validate',
+  'info',
   'vscode',
   'up',
   'down',
@@ -36,6 +38,7 @@ setup:
   om sync                              clone/pull de los repos declarados (services.*.repo)
   om gen [stack.yaml] [--out <dir>]    rinde compose + nginx + scripts en .stack/
   om validate [stack.yaml]             solo valida el stack
+  om info                              resumen del stack + qué probablemente quieras tocar
   om vscode                            genera .vscode/launch.json (attach + browser)
 
 runtime:
@@ -77,6 +80,8 @@ function main(argv: string[]): number {
         return runValidate(rest);
       case 'gen':
         return runGen(rest);
+      case 'info':
+        return runInfo();
       case 'vscode':
         return runVscode();
       case 'up':
@@ -162,6 +167,12 @@ function runValidate(args: string[]): number {
   const { stackPath } = parseStackArg(args);
   const { stack } = loadStack(stackPath);
   console.log(`✓ ${stack.name} — ${Object.keys(stack.services).length} services`);
+  return 0;
+}
+
+function runInfo(): number {
+  const loaded = loadStack(undefined);
+  process.stdout.write(renderInfo(loaded));
   return 0;
 }
 
