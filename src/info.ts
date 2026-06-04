@@ -3,7 +3,6 @@ import { resolve } from 'node:path';
 import type { LoadedStack } from './parser.js';
 import { hasRepo, type Service, type Stack } from './schema.js';
 
-// Patrones que sugieren "el usuario debería completar esto antes de prod".
 const PLACEHOLDER_PATTERNS = [
   /^changeit-/i,
   /^dev-default-/i,
@@ -12,6 +11,9 @@ const PLACEHOLDER_PATTERNS = [
   /^insert-/i,
   /^your-/i,
 ];
+
+const WRAP_WIDTH = 78;
+const DESC_INDENT = '       ';   // 7 espacios — alineado con texto post-marker
 
 const C = supportsColor()
   ? {
@@ -22,8 +24,9 @@ const C = supportsColor()
       yellow: '\x1b[33m',
       green: '\x1b[32m',
       red: '\x1b[31m',
+      magenta: '\x1b[35m',
     }
-  : { reset: '', dim: '', bold: '', cyan: '', yellow: '', green: '', red: '' };
+  : { reset: '', dim: '', bold: '', cyan: '', yellow: '', green: '', red: '', magenta: '' };
 
 function supportsColor(): boolean {
   return process.stdout.isTTY === true && process.env.NO_COLOR === undefined;
@@ -37,8 +40,9 @@ export function renderInfo(loaded: LoadedStack): string {
   const gw = stack.gateway;
 
   out.push(
-    header(`${stack.name}`) +
-      `  ${C.dim}${services.length} services${gw ? ` · gateway en :${gw.port}` : ''}${C.reset}`,
+    `${C.bold}${stack.name}${C.reset}  ${C.dim}${services.length} services${
+      gw ? ` · gateway en :${gw.port}` : ''
+    }${C.reset}`,
   );
 
   out.push('');
@@ -73,9 +77,7 @@ export function renderInfo(loaded: LoadedStack): string {
     const sorted = [...gw.routes].sort(
       (a, b) => effectiveLen(b.path) - effectiveLen(a.path),
     );
-    const maxUrl = Math.max(
-      ...sorted.map((r) => urlFor(gw.port, r.path).length),
-    );
+    const maxUrl = Math.max(...sorted.map((r) => urlFor(gw.port, r.path).length));
     for (const route of sorted) {
       const url = urlFor(gw.port, route.path);
       const note = route.strip_prefix ? `  ${C.dim}(strip prefix)${C.reset}` : '';
@@ -86,24 +88,30 @@ export function renderInfo(loaded: LoadedStack): string {
   const debugConfigs = services.filter(([, s]) => s.debug_port !== undefined);
   if (debugConfigs.length > 0) {
     out.push('');
-    out.push(section('Debug (VS Code attach via om vscode)'));
+    out.push(section('Debug') + `  ${C.dim}(om vscode genera launch.json)${C.reset}`);
+    const maxName = Math.max(...debugConfigs.map(([n]) => n.length));
     for (const [name, svc] of debugConfigs) {
-      out.push(`  ${name.padEnd(30)} attach → localhost:${svc.debug_port}`);
+      out.push(
+        `  ${name.padEnd(maxName + 2)}${C.dim}attach →${C.reset} localhost:${svc.debug_port}`,
+      );
     }
   }
 
-  const concerns = collectConcerns(stack, loaded.workDir);
+  const concerns = collectConcerns(stack);
   if (concerns.length > 0) {
     out.push('');
     out.push(`${C.yellow}⚠${C.reset}  ${C.bold}Probablemente quieras tocar${C.reset}`);
-    const maxKey = Math.max(...concerns.map((c) => `${c.service}.${c.key}`.length));
-    for (const c of concerns) {
-      const k = `${c.service}.${c.key}`.padEnd(maxKey + 2);
-      const tag = c.required ? `${C.red}[required]${C.reset} ` : '';
-      out.push(`  ${tag}${k}${C.dim}${c.reason}${C.reset}`);
-      if (c.description) {
-        // Indenta la descripción debajo, alineada con el nombre del key.
-        out.push(`  ${' '.repeat(maxKey + 2 + (c.required ? 11 : 0))}${C.dim}↳ ${c.description}${C.reset}`);
+    const grouped = groupByService(concerns);
+    for (const [svcName, items] of grouped) {
+      out.push('');
+      out.push(`  ${C.cyan}${svcName}${C.reset}`);
+      for (const c of items) {
+        out.push(`    ${renderConcernLine(c)}`);
+        if (c.description) {
+          for (const line of wrapText(c.description, WRAP_WIDTH - DESC_INDENT.length)) {
+            out.push(`    ${DESC_INDENT}${C.dim}${line}${C.reset}`);
+          }
+        }
       }
     }
   } else {
@@ -114,8 +122,45 @@ export function renderInfo(loaded: LoadedStack): string {
   return out.join('\n') + '\n';
 }
 
-function header(text: string): string {
-  return `${C.bold}${text}${C.reset}`;
+function renderConcernLine(c: Concern): string {
+  const marker = c.required
+    ? `${C.red}✗${C.reset}`
+    : c.reason.startsWith('placeholder')
+    ? `${C.yellow}!${C.reset}`
+    : `${C.dim}·${C.reset}`;
+  const tag = c.required ? ` ${C.red}[required]${C.reset}` : '';
+  return `${marker}${tag} ${C.bold}${c.key}${C.reset} ${C.dim}— ${c.reason}${C.reset}`;
+}
+
+function groupByService(concerns: Concern[]): Map<string, Concern[]> {
+  const grouped = new Map<string, Concern[]>();
+  for (const c of concerns) {
+    const list = grouped.get(c.service) ?? [];
+    list.push(c);
+    grouped.set(c.service, list);
+  }
+  // Ordenar items de cada service: required arriba.
+  for (const list of grouped.values()) {
+    list.sort((a, b) => (b.required ? 1 : 0) - (a.required ? 1 : 0));
+  }
+  return grouped;
+}
+
+function wrapText(text: string, width: number): string[] {
+  if (text.length <= width) return [text];
+  const words = text.split(/\s+/);
+  const lines: string[] = [];
+  let current = '';
+  for (const word of words) {
+    if ((current + ' ' + word).trim().length > width) {
+      if (current) lines.push(current);
+      current = word;
+    } else {
+      current = (current + ' ' + word).trim();
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
 }
 
 function section(text: string): string {
@@ -134,11 +179,7 @@ function formatServiceRow(name: string, svc: Service): string {
 }
 
 function shortenRepo(repo: string): string {
-  // github.com/logieinc/foo.git → foo, /local → local
-  return repo
-    .replace(/\.git$/, '')
-    .split(/[/:]/)
-    .pop() ?? repo;
+  return repo.replace(/\.git$/, '').split(/[/:]/).pop() ?? repo;
 }
 
 function urlFor(port: number, path: string): string {
@@ -156,10 +197,7 @@ function collectRepos(stack: Stack): RepoEntry[] {
   const seen = new Map<string, RepoEntry>();
   for (const svc of Object.values(stack.services)) {
     if (!hasRepo(svc)) continue;
-    const slug = svc.repo
-      .replace(/\.git$/, '')
-      .split(/[/:]/)
-      .pop()!;
+    const slug = svc.repo.replace(/\.git$/, '').split(/[/:]/).pop()!;
     if (!seen.has(slug)) seen.set(slug, { slug, ref: svc.ref });
   }
   return [...seen.values()];
@@ -183,7 +221,7 @@ type Concern = {
   required?: boolean;
 };
 
-function collectConcerns(stack: Stack, _workDir: string): Concern[] {
+function collectConcerns(stack: Stack): Concern[] {
   const out: Concern[] = [];
 
   for (const [svcName, svc] of Object.entries(stack.services)) {
@@ -195,9 +233,7 @@ function collectConcerns(stack: Stack, _workDir: string): Concern[] {
       let reason: string | null = null;
       if (v === '') reason = 'vacío';
       else if (PLACEHOLDER_PATTERNS.some((re) => re.test(v))) {
-        reason = `placeholder: "${truncate(v, 30)}"`;
-      } else if (m.required === true) {
-        // Marcado como required en la metadata, pero ya tiene valor — no es concern.
+        reason = `placeholder "${truncate(v, 30)}"`;
       }
 
       if (reason !== null) {
@@ -209,13 +245,7 @@ function collectConcerns(stack: Stack, _workDir: string): Concern[] {
     }
   }
 
-  // Required arriba (los más urgentes), después el resto.
-  return out.sort((a, b) => {
-    if ((b.required ? 1 : 0) - (a.required ? 1 : 0) !== 0) {
-      return (b.required ? 1 : 0) - (a.required ? 1 : 0);
-    }
-    return 0;
-  });
+  return out;
 }
 
 function truncate(s: string, max: number): string {
