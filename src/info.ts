@@ -1,5 +1,4 @@
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { relative } from 'node:path';
 import type { LoadedStack } from './parser.js';
 import { hasRepo, type Service, type Stack } from './schema.js';
 
@@ -35,6 +34,7 @@ function supportsColor(): boolean {
 export function renderInfo(loaded: LoadedStack): string {
   const out: string[] = [];
   const { stack } = loaded;
+  const sourceLabel = relative(process.cwd(), loaded.sourcePath) || loaded.sourcePath;
 
   const services = Object.entries(stack.services);
   const gw = stack.gateway;
@@ -42,7 +42,7 @@ export function renderInfo(loaded: LoadedStack): string {
   out.push(
     `${C.bold}${stack.name}${C.reset}  ${C.dim}${services.length} services${
       gw ? ` · gateway en :${gw.port}` : ''
-    }${C.reset}`,
+    } · ${sourceLabel}${C.reset}`,
   );
 
   out.push('');
@@ -59,6 +59,7 @@ export function renderInfo(loaded: LoadedStack): string {
     for (const r of repos) {
       const refLabel = r.ref ?? `${C.dim}(default branch)${C.reset}`;
       out.push(`  ${r.slug.padEnd(maxName + 2)}${refLabel}`);
+      out.push(`  ${' '.repeat(maxName + 2)}${C.dim}${r.url}${C.reset}`);
     }
   }
 
@@ -97,7 +98,7 @@ export function renderInfo(loaded: LoadedStack): string {
     }
   }
 
-  const concerns = collectConcerns(stack);
+  const concerns = collectConcerns(loaded);
   if (concerns.length > 0) {
     out.push('');
     out.push(`${C.yellow}⚠${C.reset}  ${C.bold}Probablemente quieras tocar${C.reset}`);
@@ -107,6 +108,9 @@ export function renderInfo(loaded: LoadedStack): string {
       out.push(`  ${C.cyan}${svcName}${C.reset}`);
       for (const c of items) {
         out.push(`    ${renderConcernLine(c)}`);
+        if (c.location) {
+          out.push(`    ${DESC_INDENT}${C.dim}${c.location}${C.reset}`);
+        }
         if (c.description) {
           for (const line of wrapText(c.description, WRAP_WIDTH - DESC_INDENT.length)) {
             out.push(`    ${DESC_INDENT}${C.dim}${line}${C.reset}`);
@@ -114,6 +118,15 @@ export function renderInfo(loaded: LoadedStack): string {
         }
       }
     }
+
+    out.push('');
+    const requiredCount = concerns.filter((c) => c.required).length;
+    const optionalCount = concerns.length - requiredCount;
+    out.push(
+      `  ${C.dim}Total:${C.reset} ${
+        requiredCount > 0 ? `${C.red}${requiredCount} required${C.reset}` : `${C.green}0 required${C.reset}`
+      }${C.dim} · ${optionalCount} opcionales${C.reset}`,
+    );
   } else {
     out.push('');
     out.push(`${C.green}✓${C.reset} no detecté placeholders ni valores vacíos`);
@@ -191,14 +204,14 @@ function effectiveLen(path: string): number {
   return path.replace(/^(=|\^~)\s*/, '').length;
 }
 
-type RepoEntry = { slug: string; ref: string | undefined };
+type RepoEntry = { slug: string; ref: string | undefined; url: string };
 
 function collectRepos(stack: Stack): RepoEntry[] {
   const seen = new Map<string, RepoEntry>();
   for (const svc of Object.values(stack.services)) {
     if (!hasRepo(svc)) continue;
     const slug = svc.repo.replace(/\.git$/, '').split(/[/:]/).pop()!;
-    if (!seen.has(slug)) seen.set(slug, { slug, ref: svc.ref });
+    if (!seen.has(slug)) seen.set(slug, { slug, ref: svc.ref, url: svc.repo });
   }
   return [...seen.values()];
 }
@@ -219,12 +232,14 @@ type Concern = {
   reason: string;
   description?: string;
   required?: boolean;
+  location?: string;       // "arch/stack.yaml:42" — clickeable en VS Code terminal
 };
 
-function collectConcerns(stack: Stack): Concern[] {
+function collectConcerns(loaded: LoadedStack): Concern[] {
   const out: Concern[] = [];
+  const sourceRel = relative(process.cwd(), loaded.sourcePath) || loaded.sourcePath;
 
-  for (const [svcName, svc] of Object.entries(stack.services)) {
+  for (const [svcName, svc] of Object.entries(loaded.stack.services)) {
     const meta = svc.env_meta ?? {};
     for (const [k, vRaw] of Object.entries(svc.env ?? {})) {
       const v = String(vRaw);
@@ -240,6 +255,8 @@ function collectConcerns(stack: Stack): Concern[] {
         const concern: Concern = { service: svcName, key: k, reason };
         if (m.description) concern.description = m.description;
         if (m.required) concern.required = m.required;
+        const loc = loaded.locations.get(`${svcName}.${k}`);
+        if (loc) concern.location = `${sourceRel}:${loc.line}:${loc.col}`;
         out.push(concern);
       }
     }

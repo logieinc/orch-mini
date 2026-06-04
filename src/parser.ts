@@ -1,10 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
-import { parse as parseYaml } from 'yaml';
+import { isMap, isPair, isScalar, LineCounter, parseDocument } from 'yaml';
 import { z } from 'zod';
 import { expandFileRefs } from './file-refs.js';
 import { findStack, STACK_FILENAME, STACK_SUBDIRS } from './discover.js';
 import { stackSchema, type Stack } from './schema.js';
+
+// Mapa de "service.envKey" → {line, col} del archivo fuente.
+// Habilita reportes con archivo:línea clickeables en VS Code terminal.
+export type Locations = Map<string, { line: number; col: number }>;
 
 export type LoadedStack = {
   stack: Stack;
@@ -12,6 +16,7 @@ export type LoadedStack = {
   workDir: string;          // dirname(stack.yaml)
   workspaceRoot: string;    // donde van repos/ y .stack/ — padre del workDir si el yaml vive en arch/
   outDir: string;           // workspaceRoot/.stack
+  locations: Locations;
 };
 
 export function loadStack(stackPath?: string): LoadedStack {
@@ -36,18 +41,23 @@ export function loadStack(stackPath?: string): LoadedStack {
     throw new Error(`no se pudo leer el stack en ${absPath}: ${msg}`);
   }
 
-  let doc: unknown;
+  const lineCounter = new LineCounter();
+  let docNode: ReturnType<typeof parseDocument>;
   try {
-    doc = parseYaml(raw);
+    docNode = parseDocument(raw, { lineCounter });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`YAML inválido en ${absPath}: ${msg}`);
   }
 
   const workDir = resolve(absPath, '..');
+  const locations = collectLocations(docNode, lineCounter);
+
+  // Plain JS desde el AST para los pasos siguientes.
+  const docPlain = docNode.toJSON();
 
   // Expandir ${file:path} antes de validar — paths se resuelven relativo al workDir.
-  const expanded = expandFileRefs(doc, workDir);
+  const expanded = expandFileRefs(docPlain, workDir);
 
   // Normalizar el formato mixed de env (string | {value, description, required})
   // a dos campos planos: env (Record<string,string>) + env_meta (descripciones).
@@ -66,7 +76,42 @@ export function loadStack(stackPath?: string): LoadedStack {
     workDir,
     workspaceRoot,
     outDir: resolve(workspaceRoot, '.stack'),
+    locations,
   };
+}
+
+// Recorre el AST del YAML y extrae line/col de cada services.<svc>.env.<KEY>.
+// El path es el del KEY del par (donde el usuario debería pararse para editar).
+function collectLocations(
+  doc: ReturnType<typeof parseDocument>,
+  lineCounter: LineCounter,
+): Locations {
+  const locations: Locations = new Map();
+  const services = doc.get('services', true);
+  if (!isMap(services)) return locations;
+
+  for (const svcPair of services.items) {
+    if (!isPair(svcPair) || !isScalar(svcPair.key)) continue;
+    const svcName = String(svcPair.key.value);
+
+    const svcNode = svcPair.value;
+    if (!isMap(svcNode)) continue;
+
+    const envNode = svcNode.get('env', true);
+    if (!isMap(envNode)) continue;
+
+    for (const envPair of envNode.items) {
+      if (!isPair(envPair) || !isScalar(envPair.key)) continue;
+      const keyNode = envPair.key;
+      const key = String(keyNode.value);
+      const range = keyNode.range;
+      if (!range) continue;
+      const pos = lineCounter.linePos(range[0]);
+      locations.set(`${svcName}.${key}`, { line: pos.line, col: pos.col });
+    }
+  }
+
+  return locations;
 }
 
 function computeWorkspaceRoot(workDir: string): string {
