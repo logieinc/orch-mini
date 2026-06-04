@@ -7,7 +7,7 @@
     "node": ">=18"
   },
   "bin": {
-    "om": "./bin/om.cjs"
+    "om": "bin/om.cjs"
   },
   "files": [
     "bin",
