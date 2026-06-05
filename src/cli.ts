@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { initStack } from './init.js';
 import { renderInfo } from './info.js';
 import { loadStack, type LoadedStack } from './parser.js';
@@ -27,11 +28,27 @@ const COMMANDS = [
   'logs',
   'ps',
   'help',
+  'version',
 ] as const;
 type Command = (typeof COMMANDS)[number];
 
+// Versión del propio engine — leída del package.json del paquete instalado.
+function readVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8')) as {
+      version?: string;
+    };
+    return pkg.version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+const VERSION = readVersion();
+
 function printUsage(): void {
-  console.log(`om — orquestador declarativo mínimo
+  console.log(`om v${VERSION} — orquestador declarativo mínimo
 
 setup:
   om init                              crea un stack.yaml template en la carpeta actual
@@ -51,6 +68,7 @@ runtime:
   om ps                                docker compose ps
 
   om help                              muestra esta ayuda
+  om version | --version | -v          muestra la versión del CLI (${VERSION})
 
 Sin path explícito, busca el stack.yaml más cercano subiendo desde la carpeta actual.
 `);
@@ -58,6 +76,11 @@ Sin path explícito, busca el stack.yaml más cercano subiendo desde la carpeta 
 
 function main(argv: string[]): number {
   const [cmd, ...rest] = argv;
+
+  if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
+    console.log(VERSION);
+    return 0;
+  }
 
   if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
     printUsage();
