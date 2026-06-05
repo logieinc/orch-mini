@@ -107,6 +107,11 @@ export const stackSchema = z
       .min(1)
       .regex(/^[a-z][a-z0-9-]*$/, 'name debe ser kebab-case y empezar con letra'),
     gateway: gatewaySchema.optional(),
+    // Variables de plantilla para el stack. Se escriben al .env (al lado de
+    // REPOS_DIR, STACK_DIR) y docker compose las interpola en cualquier ${VAR}
+    // del docker-compose.yaml. Útil para no repetir un valor (dominio público,
+    // versión de imagen, etc) en N lugares del yaml.
+    vars: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]).transform(String)).optional(),
     // Vars compartidas: se auto-inyectan a TODOS los services. Si un service
     // declara la misma var en su env:, gana el del service.
     common_env: envMapSchema.optional(),
