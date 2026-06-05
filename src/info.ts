@@ -63,6 +63,23 @@ export function renderInfo(loaded: LoadedStack): string {
     }
   }
 
+  if (stack.common_env && Object.keys(stack.common_env).length > 0) {
+    out.push('');
+    out.push(section('Common env') + `  ${C.dim}(inyectado en todos los services)${C.reset}`);
+    const commonMeta = stack.common_env_meta ?? {};
+    const maxKey = Math.max(...Object.keys(stack.common_env).map((k) => k.length));
+    for (const [k, v] of Object.entries(stack.common_env)) {
+      const value = String(v);
+      const display = value === ''
+        ? `${C.dim}(vacío)${C.reset}`
+        : value.length > 40
+        ? `${truncate(value, 40)}`
+        : value;
+      const reqTag = commonMeta[k]?.required ? ` ${C.red}[required]${C.reset}` : '';
+      out.push(`  ${k.padEnd(maxKey + 2)}${C.dim}${display}${C.reset}${reqTag}`);
+    }
+  }
+
   const dbs = collectDatabases(stack);
   if (dbs.length > 0) {
     out.push('');
@@ -238,31 +255,54 @@ type Concern = {
 function collectConcerns(loaded: LoadedStack): Concern[] {
   const out: Concern[] = [];
   const sourceRel = relative(process.cwd(), loaded.sourcePath) || loaded.sourcePath;
+  const stack = loaded.stack;
 
-  for (const [svcName, svc] of Object.entries(loaded.stack.services)) {
+  // 1. Concerns que vienen de common_env — dedupe: una sola entrada con service="(common_env)".
+  const commonEnv = stack.common_env ?? {};
+  const commonMeta = stack.common_env_meta ?? {};
+  const commonLocations = loaded.locations; // common_env vars usan key "(common).<KEY>"
+  for (const [k, vRaw] of Object.entries(commonEnv)) {
+    const v = String(vRaw);
+    const m = commonMeta[k] ?? {};
+    const reason = problemFor(v);
+    if (reason === null) continue;
+
+    const concern: Concern = { service: '(common_env)', key: k, reason };
+    if (m.description) concern.description = m.description;
+    if (m.required) concern.required = m.required;
+    const loc = commonLocations.get(`(common).${k}`);
+    if (loc) concern.location = `${sourceRel}:${loc.line}:${loc.col}`;
+    out.push(concern);
+  }
+
+  // 2. Concerns por service — solo vars que NO vienen de common_env.
+  for (const [svcName, svc] of Object.entries(stack.services)) {
     const meta = svc.env_meta ?? {};
     for (const [k, vRaw] of Object.entries(svc.env ?? {})) {
+      if (meta[k]?.from_common) continue; // ya cubierto arriba
       const v = String(vRaw);
       const m = meta[k] ?? {};
+      const reason = problemFor(v);
+      if (reason === null) continue;
 
-      let reason: string | null = null;
-      if (v === '') reason = 'vacío';
-      else if (PLACEHOLDER_PATTERNS.some((re) => re.test(v))) {
-        reason = `placeholder "${truncate(v, 30)}"`;
-      }
-
-      if (reason !== null) {
-        const concern: Concern = { service: svcName, key: k, reason };
-        if (m.description) concern.description = m.description;
-        if (m.required) concern.required = m.required;
-        const loc = loaded.locations.get(`${svcName}.${k}`);
-        if (loc) concern.location = `${sourceRel}:${loc.line}:${loc.col}`;
-        out.push(concern);
-      }
+      const concern: Concern = { service: svcName, key: k, reason };
+      if (m.description) concern.description = m.description;
+      if (m.required) concern.required = m.required;
+      const loc = loaded.locations.get(`${svcName}.${k}`);
+      if (loc) concern.location = `${sourceRel}:${loc.line}:${loc.col}`;
+      out.push(concern);
     }
   }
 
   return out;
+}
+
+function problemFor(value: string): string | null {
+  if (value === '') return 'vacío';
+  if (PLACEHOLDER_PATTERNS.some((re) => re.test(value))) {
+    return `placeholder "${truncate(value, 30)}"`;
+  }
+  return null;
 }
 
 function truncate(s: string, max: number): string {

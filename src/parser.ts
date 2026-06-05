@@ -68,10 +68,14 @@ export function loadStack(stackPath?: string): LoadedStack {
     throw new Error(formatZodError(result.error, absPath));
   }
 
+  // Mergear common_env en cada service.env. Marca env_meta.from_common=true
+  // en cada var heredada para que info pueda deduplicar.
+  const stack = mergeCommonEnv(result.data);
+
   const workspaceRoot = computeWorkspaceRoot(workDir);
 
   return {
-    stack: result.data,
+    stack,
     sourcePath: absPath,
     workDir,
     workspaceRoot,
@@ -80,13 +84,59 @@ export function loadStack(stackPath?: string): LoadedStack {
   };
 }
 
-// Recorre el AST del YAML y extrae line/col de cada services.<svc>.env.<KEY>.
-// El path es el del KEY del par (donde el usuario debería pararse para editar).
+function mergeCommonEnv(stack: Stack): Stack {
+  if (!stack.common_env || Object.keys(stack.common_env).length === 0) return stack;
+  const commonEnv = stack.common_env;
+  const commonMeta = stack.common_env_meta ?? {};
+
+  const newServices: typeof stack.services = {};
+  for (const [name, svc] of Object.entries(stack.services)) {
+    const mergedEnv: Record<string, string> = { ...commonEnv, ...(svc.env ?? {}) };
+
+    const mergedMeta: typeof svc.env_meta = {};
+    // Para cada var del common, agregar su meta marcada from_common=true.
+    for (const [k, v] of Object.entries(commonEnv)) {
+      // si el service no la overridea, viene del común
+      if (svc.env?.[k] === undefined) {
+        mergedMeta[k] = { ...(commonMeta[k] ?? {}), from_common: true };
+      }
+    }
+    // Luego, las metas del service tienen prioridad.
+    for (const [k, m] of Object.entries(svc.env_meta ?? {})) {
+      mergedMeta[k] = m;
+    }
+
+    newServices[name] = {
+      ...svc,
+      env: mergedEnv,
+      env_meta: Object.keys(mergedMeta).length > 0 ? mergedMeta : svc.env_meta,
+    };
+  }
+  return { ...stack, services: newServices };
+}
+
+// Recorre el AST del YAML y extrae line/col de cada services.<svc>.env.<KEY>
+// y de cada common_env.<KEY>. Keys de common_env quedan como "(common).<KEY>".
 function collectLocations(
   doc: ReturnType<typeof parseDocument>,
   lineCounter: LineCounter,
 ): Locations {
   const locations: Locations = new Map();
+
+  // common_env del root
+  const commonEnv = doc.get('common_env', true);
+  if (isMap(commonEnv)) {
+    for (const envPair of commonEnv.items) {
+      if (!isPair(envPair) || !isScalar(envPair.key)) continue;
+      const key = String(envPair.key.value);
+      const range = envPair.key.range;
+      if (!range) continue;
+      const pos = lineCounter.linePos(range[0]);
+      locations.set(`(common).${key}`, { line: pos.line, col: pos.col });
+    }
+  }
+
+  // services.<svc>.env.<KEY>
   const services = doc.get('services', true);
   if (!isMap(services)) return locations;
 
@@ -102,9 +152,8 @@ function collectLocations(
 
     for (const envPair of envNode.items) {
       if (!isPair(envPair) || !isScalar(envPair.key)) continue;
-      const keyNode = envPair.key;
-      const key = String(keyNode.value);
-      const range = keyNode.range;
+      const key = String(envPair.key.value);
+      const range = envPair.key.range;
       if (!range) continue;
       const pos = lineCounter.linePos(range[0]);
       locations.set(`${svcName}.${key}`, { line: pos.line, col: pos.col });
@@ -123,40 +172,57 @@ function computeWorkspaceRoot(workDir: string): string {
   return workDir;
 }
 
-// Recorre stack.services.*.env y si algún valor es un objeto con shape
-// { value, description?, required? }, splittea: env[k] = String(value),
-// env_meta[k] = { description?, required? }. Los valores que ya son string,
-// number o boolean pasan tal cual.
+// Splittea env values en formato mixed (string | {value,description,required})
+// a dos campos planos: env (Record<string,string>) + env_meta (descripciones).
+// Aplica a stack.services.*.env y también a stack.common_env.
 function normalizeEnvMetadata(doc: unknown): unknown {
   if (!isPlainObject(doc)) return doc;
-  const services = isPlainObject(doc.services) ? doc.services : undefined;
-  if (!services) return doc;
+  const out: Record<string, unknown> = { ...doc };
 
-  const newServices: Record<string, unknown> = {};
-  for (const [svcName, svc] of Object.entries(services)) {
-    if (!isPlainObject(svc) || !isPlainObject(svc.env)) {
-      newServices[svcName] = svc;
-      continue;
-    }
-    const env: Record<string, unknown> = {};
-    const env_meta: Record<string, { description?: string; required?: boolean }> = {};
-    for (const [k, v] of Object.entries(svc.env)) {
-      if (isPlainObject(v) && ('value' in v || 'description' in v || 'required' in v)) {
-        env[k] = v.value ?? '';
-        const meta: { description?: string; required?: boolean } = {};
-        if (typeof v.description === 'string') meta.description = v.description;
-        if (typeof v.required === 'boolean') meta.required = v.required;
-        if (Object.keys(meta).length > 0) env_meta[k] = meta;
-      } else {
-        env[k] = v;
-      }
-    }
-    const newSvc: Record<string, unknown> = { ...svc, env };
-    if (Object.keys(env_meta).length > 0) newSvc.env_meta = env_meta;
-    newServices[svcName] = newSvc;
+  // common_env del root
+  if (isPlainObject(out.common_env)) {
+    const { values, meta } = splitMixedEnv(out.common_env);
+    out.common_env = values;
+    if (Object.keys(meta).length > 0) out.common_env_meta = meta;
   }
 
-  return { ...doc, services: newServices };
+  // services.*.env
+  if (isPlainObject(out.services)) {
+    const newServices: Record<string, unknown> = {};
+    for (const [svcName, svc] of Object.entries(out.services)) {
+      if (!isPlainObject(svc) || !isPlainObject(svc.env)) {
+        newServices[svcName] = svc;
+        continue;
+      }
+      const { values, meta } = splitMixedEnv(svc.env);
+      const newSvc: Record<string, unknown> = { ...svc, env: values };
+      if (Object.keys(meta).length > 0) newSvc.env_meta = meta;
+      newServices[svcName] = newSvc;
+    }
+    out.services = newServices;
+  }
+
+  return out;
+}
+
+function splitMixedEnv(envMap: Record<string, unknown>): {
+  values: Record<string, unknown>;
+  meta: Record<string, { description?: string; required?: boolean }>;
+} {
+  const values: Record<string, unknown> = {};
+  const meta: Record<string, { description?: string; required?: boolean }> = {};
+  for (const [k, v] of Object.entries(envMap)) {
+    if (isPlainObject(v) && ('value' in v || 'description' in v || 'required' in v)) {
+      values[k] = v.value ?? '';
+      const m: { description?: string; required?: boolean } = {};
+      if (typeof v.description === 'string') m.description = v.description;
+      if (typeof v.required === 'boolean') m.required = v.required;
+      if (Object.keys(m).length > 0) meta[k] = m;
+    } else {
+      values[k] = v;
+    }
+  }
+  return { values, meta };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

@@ -8,12 +8,14 @@ const serviceNameSchema = z
 const envValueSchema = z.union([z.string(), z.number(), z.boolean()]).transform(String);
 const envMapSchema = z.record(z.string(), envValueSchema);
 
-// Metadata opcional por env var: description + required.
+// Metadata opcional por env var: description + required + from_common.
 // El parser pre-normaliza el formato mixed (string vs {value,description,required})
 // dejando `env` como Record<string,string> y `env_meta` como esta estructura.
+// from_common lo agrega el parser cuando la var fue mergeada desde stack.common_env.
 const envMetaEntrySchema = z.object({
   description: z.string().optional(),
   required: z.boolean().optional(),
+  from_common: z.boolean().optional(),
 });
 const envMetaMapSchema = z.record(z.string(), envMetaEntrySchema);
 
@@ -105,6 +107,10 @@ export const stackSchema = z
       .min(1)
       .regex(/^[a-z][a-z0-9-]*$/, 'name debe ser kebab-case y empezar con letra'),
     gateway: gatewaySchema.optional(),
+    // Vars compartidas: se auto-inyectan a TODOS los services. Si un service
+    // declara la misma var en su env:, gana el del service.
+    common_env: envMapSchema.optional(),
+    common_env_meta: envMetaMapSchema.optional(),
     services: z
       .record(serviceNameSchema, serviceSchema)
       .refine((s) => Object.keys(s).length > 0, { message: 'el stack debe tener al menos un service' }),
