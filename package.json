@@ -1,6 +1,6 @@
 {
   "name": "orch-mini",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Orquestador declarativo mínimo: un stack.yaml describe la arquitectura, om renderiza docker-compose + nginx + scripts y levanta el stack.",
   "type": "module",
   "engines": {
@@ -44,7 +44,7 @@
     "access": "public"
   },
   "dependencies": {
-    "orch-mini": "^0.1.7",
+    "orch-mini": "^0.1.9",
     "tsx": "^4.19.0",
     "yaml": "^2.6.0",
     "zod": "^3.23.0"
