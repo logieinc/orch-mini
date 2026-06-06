@@ -36,7 +36,7 @@ function renderPostgresInit(databases: string[]): string {
         `databases: nombre inválido '${db}' — solo se permiten [a-zA-Z0-9_-]`,
       );
     }
-    lines.push(`SELECT 'CREATE DATABASE ${safe}'`);
+    lines.push(`SELECT 'CREATE DATABASE "${safe}"'`);
     lines.push(`WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${safe}')\\gexec`);
   }
   lines.push('');
