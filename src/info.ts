@@ -115,6 +115,17 @@ export function renderInfo(loaded: LoadedStack): string {
     }
   }
 
+  const tasks = stack.tasks;
+  if (tasks && Object.keys(tasks).length > 0) {
+    out.push('');
+    out.push(section('Tasks') + `  ${C.dim}(om <task-name> [args...])${C.reset}`);
+    const maxName = Math.max(...Object.keys(tasks).map((n) => n.length));
+    for (const [name, t] of Object.entries(tasks)) {
+      out.push(`  ${name.padEnd(maxName + 2)}${C.dim}${t.description}${C.reset}`);
+      out.push(`  ${' '.repeat(maxName + 2)}${C.dim}→ ${t.run}${C.reset}`);
+    }
+  }
+
   const concerns = collectConcerns(loaded);
   if (concerns.length > 0) {
     out.push('');

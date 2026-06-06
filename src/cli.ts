@@ -72,6 +72,23 @@ runtime:
 
 Sin path explícito, busca el stack.yaml más cercano subiendo desde la carpeta actual.
 `);
+
+  // Si hay un stack.yaml resoluble desde el cwd y declara tasks:, listarlas
+  // como `tasks (de <stack-name>):`. No-op si no hay stack o no hay tasks.
+  try {
+    const loaded = loadStack(undefined);
+    const tasks = loaded.stack.tasks;
+    if (tasks && Object.keys(tasks).length > 0) {
+      console.log(`tasks (de ${loaded.stack.name}):`);
+      const maxName = Math.max(...Object.keys(tasks).map((n) => n.length));
+      for (const [name, t] of Object.entries(tasks)) {
+        console.log(`  om ${name.padEnd(maxName + 2)} ${t.description}`);
+      }
+      console.log('');
+    }
+  } catch {
+    // sin stack en el cwd — el listado de tasks es opcional, seguimos.
+  }
 }
 
 function main(argv: string[]): number {
@@ -88,9 +105,9 @@ function main(argv: string[]): number {
   }
 
   if (!COMMANDS.includes(cmd as Command)) {
-    console.error(`comando desconocido: ${cmd}\n`);
-    printUsage();
-    return 1;
+    // Antes de fallar, ver si el cmd resuelve a una task declarada en el
+    // stack.yaml más cercano. Esto habilita `om <task-name> [args...]`.
+    return runTaskOrFail(cmd, rest);
   }
 
   try {
@@ -278,6 +295,47 @@ function runDockerCompose(dockerArgs: string[]): number {
 
   if (res.error) {
     console.error(`error ejecutando docker compose: ${res.error.message}`);
+    return 1;
+  }
+  return res.status ?? 1;
+}
+
+function runTaskOrFail(cmd: string, args: string[]): number {
+  // Cargar el stack — si falla (no hay yaml o no parsea), tratar como
+  // comando desconocido y mostrar usage. Si carga pero el cmd no es una
+  // task declarada, listar las tasks disponibles.
+  let loaded: LoadedStack;
+  try {
+    loaded = loadStack(undefined);
+  } catch {
+    console.error(`comando desconocido: ${cmd}\n`);
+    printUsage();
+    return 1;
+  }
+
+  const task = loaded.stack.tasks?.[cmd];
+  if (!task) {
+    const available = Object.keys(loaded.stack.tasks ?? {});
+    console.error(`comando desconocido: ${cmd}`);
+    if (available.length > 0) {
+      console.error(`tasks declaradas en el stack: ${available.join(', ')}`);
+    } else {
+      console.error(`(el stack '${loaded.stack.name}' no declara tasks:)`);
+    }
+    return 1;
+  }
+
+  // Ejecutar `task.run` como un comando de shell con los args adicionales
+  // posicionalizados ("$@"). cwd = workspaceRoot para que `bash arch/x.sh`
+  // resuelva como espera el dev (el yaml suele vivir en arch/).
+  const shellCmd = `${task.run} "$@"`;
+  const res = spawnSync('sh', ['-c', shellCmd, 'om-task', ...args], {
+    stdio: 'inherit',
+    cwd: loaded.workspaceRoot,
+  });
+
+  if (res.error) {
+    console.error(`error ejecutando task '${cmd}': ${res.error.message}`);
     return 1;
   }
   return res.status ?? 1;

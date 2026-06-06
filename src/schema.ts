@@ -5,6 +5,25 @@ const serviceNameSchema = z
   .min(1)
   .regex(/^[a-z][a-z0-9_-]*$/, 'service name debe ser kebab/snake-case y empezar con letra');
 
+const taskNameSchema = z
+  .string()
+  .min(1)
+  .regex(/^[a-z][a-z0-9-]*$/, 'task name debe ser kebab-case y empezar con letra');
+
+// Built-in subcomandos de `om` — un task con cualquiera de estos nombres
+// haría que el comando deje de funcionar. La lista la valida el schema
+// (no se importa desde cli.ts para evitar el ciclo).
+const RESERVED_TASK_NAMES = new Set([
+  'init', 'sync', 'gen', 'validate', 'info', 'vscode',
+  'up', 'down', 'stop', 'restart', 'build', 'logs', 'ps',
+  'help', 'version',
+]);
+
+const taskSchema = z.object({
+  description: z.string().min(1),
+  run: z.string().min(1),
+});
+
 const envValueSchema = z.union([z.string(), z.number(), z.boolean()]).transform(String);
 const envMapSchema = z.record(z.string(), envValueSchema);
 
@@ -119,6 +138,11 @@ export const stackSchema = z
     services: z
       .record(serviceNameSchema, serviceSchema)
       .refine((s) => Object.keys(s).length > 0, { message: 'el stack debe tener al menos un service' }),
+    // Tareas operativas del stack — scripts/comandos que el dev quiere
+    // invocar a demanda (no son parte del runtime declarativo). Cada task
+    // se ejecuta como `om <task-name> [args...]` con cwd = workspaceRoot
+    // (el dir del stack.yaml), heredando el entorno y stdio del padre.
+    tasks: z.record(taskNameSchema, taskSchema).optional(),
   })
   .superRefine((stack, ctx) => {
     const names = new Set(Object.keys(stack.services));
@@ -174,6 +198,16 @@ export const stackSchema = z
           code: z.ZodIssueCode.custom,
           path: ['services'],
           message: `puerto host ${port} reclamado por: ${owners.join(', ')}`,
+        });
+      }
+    }
+
+    for (const taskName of Object.keys(stack.tasks ?? {})) {
+      if (RESERVED_TASK_NAMES.has(taskName)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['tasks', taskName],
+          message: `task '${taskName}' colisiona con un subcomando built-in de om`,
         });
       }
     }
