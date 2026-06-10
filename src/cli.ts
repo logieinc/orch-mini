@@ -245,6 +245,12 @@ function runInfo(mode?: string): number {
 
 function runVscode(mode?: string): number {
   const loaded = loadStack(undefined, mode);
+  generateVscode(loaded);
+  return 0;
+}
+
+// Extraído de runVscode para que `up` lo pueda invocar sin re-cargar el stack.
+function generateVscode(loaded: LoadedStack): void {
   const vscodeDir = resolve(loaded.workspaceRoot, '.vscode');
   mkdirSync(vscodeDir, { recursive: true });
   const target = join(vscodeDir, 'launch.json');
@@ -256,7 +262,6 @@ function runVscode(mode?: string): number {
 
   console.log(`✓ generado ${relative(process.cwd(), target)}`);
   console.log(`  ${debugCount} attach configs · ${browserCount} browser launchers`);
-  return 0;
 }
 
 function runGen(args: string[], mode?: string): number {
@@ -266,6 +271,12 @@ function runGen(args: string[], mode?: string): number {
 
   const loaded = loadStack(stackPath, mode);
   const outDir = resolve(explicitOut ?? loaded.outDir);
+  generateArtifacts(loaded, outDir);
+  return 0;
+}
+
+// Extraído de runGen para que `up` lo pueda invocar sin re-cargar el stack.
+function generateArtifacts(loaded: LoadedStack, outDir: string): void {
   const reposDir = resolve(loaded.workspaceRoot, 'repos');
 
   mkdirSync(outDir, { recursive: true });
@@ -304,12 +315,21 @@ function runGen(args: string[], mode?: string): number {
       loaded.stack.gateway ? ' · gateway' : ''
     }`,
   );
-  return 0;
 }
 
 function runDockerCompose(dockerArgs: string[], mode?: string): number {
   const loaded = loadStack(undefined, mode);
-  ensureGenerated(loaded);
+
+  // `up` auto-regenera compose + vscode launch.json antes de levantar. Garantiza
+  // que el compose levantado refleja el stack.yaml actual y que el debug de
+  // VS Code matchea los puertos del mode activo. Los demás subcomandos
+  // (down/stop/restart/build/logs/ps) usan lo que esté ya generado.
+  if (dockerArgs[0] === 'up') {
+    generateArtifacts(loaded, loaded.outDir);
+    generateVscode(loaded);
+  } else {
+    ensureGenerated(loaded);
+  }
 
   const composePath = join(loaded.outDir, 'docker-compose.yaml');
   const envPath = join(loaded.outDir, '.env');
