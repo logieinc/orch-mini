@@ -44,7 +44,7 @@
     "access": "public"
   },
   "dependencies": {
-    "orch-mini": "^0.2.0",
+    "orch-mini": "^0.2.1",
     "tsx": "^4.19.0",
     "yaml": "^2.6.0",
     "zod": "^3.23.0"
