@@ -93,7 +93,8 @@ export function renderCompose(stack: Stack): string {
       entry.depends_on = renderDependsOn(svc.needs, oneshotSet);
     }
 
-    entry.networks = ['default'];
+    // networks: 'default' siempre + cualquier external declarada en extra_networks.
+    entry.networks = ['default', ...(svc.extra_networks ?? [])];
     // oneshot: corre una vez y termina sin restartear.
     entry.restart = svc.kind === 'oneshot' ? 'no' : 'unless-stopped';
 
@@ -104,12 +105,20 @@ export function renderCompose(stack: Stack): string {
     services.gateway = renderGatewayService(stack, oneshotSet);
   }
 
+  // networks: 'default' (managed por este compose) + cada external declarada
+  // a nivel stack, marcada como `external: true` para que docker-compose la
+  // busque por nombre existente en lugar de crearla.
+  const networks: Record<string, unknown> = {
+    default: { name: `${stack.name}_default` },
+  };
+  for (const [alias, dockerName] of Object.entries(stack.external_networks ?? {})) {
+    networks[alias] = { name: dockerName, external: true };
+  }
+
   const compose: Record<string, unknown> = {
     name: stack.name,
     services,
-    networks: {
-      default: { name: `${stack.name}_default` },
-    },
+    networks,
   };
 
   if (namedVolumes.size > 0) {

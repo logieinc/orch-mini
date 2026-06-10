@@ -90,6 +90,12 @@ const serviceSchema = z
     // Se declara opcional acá solo para que el doc raw lo acepte; nunca debe
     // sobrevivir a la validación.
     modes: z.array(modeNameSchema).optional(),
+    // Redes externas adicionales (además de la `default` propia del stack)
+    // a las que este service se conecta. Cada nombre debe estar declarado
+    // en `external_networks:` del stack root. Útil para que un service hable
+    // con containers de OTRO compose project (e.g. localstack en su propio
+    // stack standalone).
+    extra_networks: z.array(z.string().min(1)).optional(),
     image: z.string().optional(),
     build: z.string().optional(),
     repo: z.string().optional(),
@@ -165,6 +171,12 @@ export const stackSchema = z
     // ambos modes puedan coexistir levantados.
     modes: z.array(modeNameSchema).min(1).optional(),
     default_mode: modeNameSchema.optional(),
+    // Redes docker externas a las que algunos services del stack se pueden
+    // conectar (además de la `default` propia). Map de <alias-local>: <nombre
+    // real de la network docker> — el alias es como el service la referencia
+    // en su `extra_networks`. Útil para hablar con containers de otros stacks
+    // (p.ej. localstack viviendo en su propio compose project).
+    external_networks: z.record(z.string(), z.string()).optional(),
     gateway: gatewaySchema.optional(),
     // Variables de plantilla para el stack. Se escriben al .env (al lado de
     // REPOS_DIR, STACK_DIR) y docker compose las interpola en cualquier ${VAR}
@@ -267,6 +279,20 @@ export const stackSchema = z
           path: ['default_mode'],
           message: `default_mode '${stack.default_mode}' no está en modes: [${(stack.modes ?? []).join(', ')}]`,
         });
+      }
+    }
+
+    // extra_networks de cada service deben estar declaradas en external_networks.
+    const externals = new Set(Object.keys(stack.external_networks ?? {}));
+    for (const [svcName, svc] of Object.entries(stack.services)) {
+      for (const [i, net] of (svc.extra_networks ?? []).entries()) {
+        if (!externals.has(net)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['services', svcName, 'extra_networks', i],
+            message: `extra_networks referencia '${net}' que no está en external_networks: [${[...externals].join(', ')}]`,
+          });
+        }
       }
     }
   });
