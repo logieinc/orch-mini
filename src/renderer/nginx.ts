@@ -3,9 +3,17 @@ import type { Stack } from '../schema.js';
 export function renderNginx(stack: Stack): string {
   if (!stack.gateway) return '';
 
-  const usedServices = [...new Set(stack.gateway.routes.map((r) => r.service))];
+  const usedServices = new Set(stack.gateway.routes.map((r) => r.service));
+  // Los services usados como auth también necesitan upstream declarado.
+  const authServices = new Set<string>();
+  for (const route of stack.gateway.routes) {
+    if (route.auth) {
+      usedServices.add(route.auth.service);
+      authServices.add(route.auth.service);
+    }
+  }
 
-  const upstreams = usedServices
+  const upstreams = [...usedServices]
     .map((svcName) => {
       const svc = stack.services[svcName]!;
       return `upstream ${svcName} {\n    server ${svcName}:${svc.port};\n}`;
@@ -17,6 +25,11 @@ export function renderNginx(stack: Stack): string {
   const sortedRoutes = [...stack.gateway.routes].sort(
     (a, b) => effectivePathLength(b.path) - effectivePathLength(a.path),
   );
+
+  // Subrequests internos para auth_request — uno por service auth. nginx
+  // los invoca via `auth_request /_om_auth_<svc>` y capta el header
+  // `x_decoded_token` de la response.
+  const authLocations = [...authServices].map((svc) => renderAuthLocation(svc)).join('\n\n');
 
   const locations = sortedRoutes.map((route) => renderLocation(route)).join('\n\n');
 
@@ -40,10 +53,33 @@ ${indent(upstreams, 4)}
         listen 80;
         server_name ${serverName};
 
-${locations}
+${authLocations}${authLocations ? '\n\n' : ''}${locations}
     }
 }
 `;
+}
+
+function renderAuthLocation(authService: string): string {
+  // Convención: el authorizer expone su endpoint en `/<svc-name>` (e.g. el
+  // repo `authorizer` declara `server.get('/authorizer', ...)`) y recibe la
+  // request original a validar via headers X-Real-Uri / X-Real-Method.
+  // Responde 2xx con header `x_decoded_token` si está autorizado; las routes
+  // protegidas capturan ese header con `auth_request_set` y lo forwardean
+  // como `x-auth-decoded-token` al upstream.
+  const directives = [
+    `internal;`,
+    `proxy_pass http://${authService}/${authService};`,
+    `proxy_pass_request_body off;`,
+    `proxy_set_header Content-Length "";`,
+    `proxy_set_header Host $host;`,
+    `proxy_set_header X-Real-Uri $request_uri;`,
+    `proxy_set_header X-Real-Method $request_method;`,
+    `proxy_set_header Authorization $http_authorization;`,
+    `proxy_set_header Cookie $http_cookie;`,
+    `proxy_set_header X-Api-Key $http_x_api_key;`,
+  ];
+  const body = directives.map((l) => `            ${l}`).join('\n');
+  return `        location = /_om_auth_${authService} {\n${body}\n        }`;
 }
 
 function renderLocation(route: {
@@ -51,8 +87,21 @@ function renderLocation(route: {
   service: string;
   strip_prefix?: boolean;
   rewrite?: string;
+  auth?: { service: string };
 }): string {
   const directives: string[] = [];
+
+  if (route.auth) {
+    // auth_request_set captura el header `x_decoded_token` de la response
+    // del authorizer y lo expone como variable; luego lo renombramos a
+    // `x-auth-decoded-token` (el header que los guards consumen — e.g.
+    // RestrictedGuard en api-wallet).
+    directives.push(
+      `auth_request /_om_auth_${route.auth.service};`,
+      `auth_request_set $om_decoded_token $upstream_http_x_decoded_token;`,
+      `proxy_set_header x-auth-decoded-token $om_decoded_token;`,
+    );
+  }
 
   if (route.rewrite) {
     directives.push(`rewrite ${route.rewrite};`);
