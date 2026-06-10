@@ -47,7 +47,7 @@ function readVersion(): string {
 
 const VERSION = readVersion();
 
-function printUsage(): void {
+function printUsage(mode?: string): void {
   console.log(`om v${VERSION} — orquestador declarativo mínimo
 
 setup:
@@ -71,12 +71,16 @@ runtime:
   om version | --version | -v          muestra la versión del CLI (${VERSION})
 
 Sin path explícito, busca el stack.yaml más cercano subiendo desde la carpeta actual.
+
+flag global (en cualquier subcomando):
+  --mode=<name>                        elige el mode si el stack declara modes:
+                                       (p.ej. --mode=local, --mode=cloud)
 `);
 
   // Si hay un stack.yaml resoluble desde el cwd y declara tasks:, listarlas
   // como `tasks (de <stack-name>):`. No-op si no hay stack o no hay tasks.
   try {
-    const loaded = loadStack(undefined);
+    const loaded = loadStack(undefined, mode);
     const tasks = loaded.stack.tasks;
     if (tasks && Object.keys(tasks).length > 0) {
       console.log(`tasks (de ${loaded.stack.name}):`);
@@ -91,8 +95,30 @@ Sin path explícito, busca el stack.yaml más cercano subiendo desde la carpeta 
   }
 }
 
+// Extrae --mode=<x> o --mode <x> de cualquier posición de los args. Devuelve
+// el resto sin esos tokens. Flag global — aplica a todos los subcomandos.
+function extractModeArg(argv: string[]): { mode: string | undefined; rest: string[] } {
+  const rest: string[] = [];
+  let mode: string | undefined;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === '--mode' && i + 1 < argv.length) {
+      mode = argv[i + 1];
+      i++;
+      continue;
+    }
+    if (a.startsWith('--mode=')) {
+      mode = a.slice('--mode='.length);
+      continue;
+    }
+    rest.push(a);
+  }
+  return { mode, rest };
+}
+
 function main(argv: string[]): number {
-  const [cmd, ...rest] = argv;
+  const { mode, rest: argvNoMode } = extractModeArg(argv);
+  const [cmd, ...rest] = argvNoMode;
 
   if (cmd === 'version' || cmd === '--version' || cmd === '-v') {
     console.log(VERSION);
@@ -100,14 +126,14 @@ function main(argv: string[]): number {
   }
 
   if (!cmd || cmd === 'help' || cmd === '--help' || cmd === '-h') {
-    printUsage();
+    printUsage(mode);
     return 0;
   }
 
   if (!COMMANDS.includes(cmd as Command)) {
     // Antes de fallar, ver si el cmd resuelve a una task declarada en el
     // stack.yaml más cercano. Esto habilita `om <task-name> [args...]`.
-    return runTaskOrFail(cmd, rest);
+    return runTaskOrFail(cmd, rest, mode);
   }
 
   try {
@@ -115,29 +141,29 @@ function main(argv: string[]): number {
       case 'init':
         return runInit();
       case 'sync':
-        return runSync();
+        return runSync(mode);
       case 'validate':
-        return runValidate(rest);
+        return runValidate(rest, mode);
       case 'gen':
-        return runGen(rest);
+        return runGen(rest, mode);
       case 'info':
-        return runInfo();
+        return runInfo(mode);
       case 'vscode':
-        return runVscode();
+        return runVscode(mode);
       case 'up':
-        return runDockerCompose(['up', '-d', ...rest]);
+        return runDockerCompose(['up', '-d', ...rest], mode);
       case 'down':
-        return runDockerCompose(['down', ...rest]);
+        return runDockerCompose(['down', ...rest], mode);
       case 'stop':
-        return runDockerCompose(['stop', ...rest]);
+        return runDockerCompose(['stop', ...rest], mode);
       case 'restart':
-        return runDockerCompose(['restart', ...rest]);
+        return runDockerCompose(['restart', ...rest], mode);
       case 'build':
-        return runDockerCompose(['build', ...rest]);
+        return runDockerCompose(['build', ...rest], mode);
       case 'logs':
-        return runDockerCompose(['logs', '-f', '--tail=200', ...rest]);
+        return runDockerCompose(['logs', '-f', '--tail=200', ...rest], mode);
       case 'ps':
-        return runDockerCompose(['ps', ...rest]);
+        return runDockerCompose(['ps', ...rest], mode);
     }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -163,8 +189,8 @@ function runInit(): number {
   return 1;
 }
 
-function runSync(): number {
-  const loaded = loadStack(undefined);
+function runSync(mode?: string): number {
+  const loaded = loadStack(undefined, mode);
   const reposDir = resolve(loaded.workspaceRoot, 'repos');
   mkdirSync(reposDir, { recursive: true });
 
@@ -203,21 +229,22 @@ function iconFor(r: SyncResult): string {
   }
 }
 
-function runValidate(args: string[]): number {
+function runValidate(args: string[], mode?: string): number {
   const { stackPath } = parseStackArg(args);
-  const { stack } = loadStack(stackPath);
-  console.log(`✓ ${stack.name} — ${Object.keys(stack.services).length} services`);
+  const { stack, activeMode } = loadStack(stackPath, mode);
+  const modeLabel = activeMode ? ` (mode: ${activeMode})` : '';
+  console.log(`✓ ${stack.name} — ${Object.keys(stack.services).length} services${modeLabel}`);
   return 0;
 }
 
-function runInfo(): number {
-  const loaded = loadStack(undefined);
+function runInfo(mode?: string): number {
+  const loaded = loadStack(undefined, mode);
   process.stdout.write(renderInfo(loaded));
   return 0;
 }
 
-function runVscode(): number {
-  const loaded = loadStack(undefined);
+function runVscode(mode?: string): number {
+  const loaded = loadStack(undefined, mode);
   const vscodeDir = resolve(loaded.workspaceRoot, '.vscode');
   mkdirSync(vscodeDir, { recursive: true });
   const target = join(vscodeDir, 'launch.json');
@@ -232,12 +259,12 @@ function runVscode(): number {
   return 0;
 }
 
-function runGen(args: string[]): number {
+function runGen(args: string[], mode?: string): number {
   const { stackPath, rest } = parseStackArg(args);
   const outIdx = rest.indexOf('--out');
   const explicitOut = outIdx >= 0 ? rest[outIdx + 1] : undefined;
 
-  const loaded = loadStack(stackPath);
+  const loaded = loadStack(stackPath, mode);
   const outDir = resolve(explicitOut ?? loaded.outDir);
   const reposDir = resolve(loaded.workspaceRoot, 'repos');
 
@@ -280,8 +307,8 @@ function runGen(args: string[]): number {
   return 0;
 }
 
-function runDockerCompose(dockerArgs: string[]): number {
-  const loaded = loadStack(undefined);
+function runDockerCompose(dockerArgs: string[], mode?: string): number {
+  const loaded = loadStack(undefined, mode);
   ensureGenerated(loaded);
 
   const composePath = join(loaded.outDir, 'docker-compose.yaml');
@@ -300,16 +327,16 @@ function runDockerCompose(dockerArgs: string[]): number {
   return res.status ?? 1;
 }
 
-function runTaskOrFail(cmd: string, args: string[]): number {
+function runTaskOrFail(cmd: string, args: string[], mode?: string): number {
   // Cargar el stack — si falla (no hay yaml o no parsea), tratar como
   // comando desconocido y mostrar usage. Si carga pero el cmd no es una
   // task declarada, listar las tasks disponibles.
   let loaded: LoadedStack;
   try {
-    loaded = loadStack(undefined);
+    loaded = loadStack(undefined, mode);
   } catch {
     console.error(`comando desconocido: ${cmd}\n`);
-    printUsage();
+    printUsage(mode);
     return 1;
   }
 

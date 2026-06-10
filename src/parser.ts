@@ -17,9 +17,10 @@ export type LoadedStack = {
   workspaceRoot: string;    // donde van repos/ y .stack/ — padre del workDir si el yaml vive en arch/
   outDir: string;           // workspaceRoot/.stack
   locations: Locations;
+  activeMode: string | null;  // mode activo (null si el stack no declara modes)
 };
 
-export function loadStack(stackPath?: string): LoadedStack {
+export function loadStack(stackPath?: string, requestedMode?: string): LoadedStack {
   let absPath: string;
   if (stackPath) {
     absPath = resolve(process.cwd(), stackPath);
@@ -56,8 +57,13 @@ export function loadStack(stackPath?: string): LoadedStack {
   // Plain JS desde el AST para los pasos siguientes.
   const docPlain = docNode.toJSON();
 
+  // Resolver modes ANTES de cualquier otra transformación. Filtra services
+  // por `modes:`, resuelve `{by_mode: {...}}` al mode activo, sufija el name
+  // del stack con el mode, y borra los campos modes/default_mode del root.
+  const { resolved, activeMode } = applyModes(docPlain, requestedMode, absPath);
+
   // Expandir ${file:path} antes de validar — paths se resuelven relativo al workDir.
-  const expanded = expandFileRefs(docPlain, workDir);
+  const expanded = expandFileRefs(resolved, workDir);
 
   // Normalizar el formato mixed de env (string | {value, description, required})
   // a dos campos planos: env (Record<string,string>) + env_meta (descripciones).
@@ -81,6 +87,7 @@ export function loadStack(stackPath?: string): LoadedStack {
     workspaceRoot,
     outDir: resolve(workspaceRoot, '.stack'),
     locations,
+    activeMode,
   };
 }
 
@@ -227,6 +234,125 @@ function splitMixedEnv(envMap: Record<string, unknown>): {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+// Aplica modes al doc raw antes de la validación zod. Si el stack declara
+// `modes:`, determina el mode activo (param > default_mode > error), filtra
+// services cuyo `service.modes:` no incluye el activo, resuelve cualquier
+// `{by_mode: {...}}` al valor del mode, sufija `name` con `-<mode>`, y borra
+// los campos `modes`/`default_mode` del root. Si el stack NO declara modes,
+// no transforma nada (compat con stacks single-mode).
+function applyModes(
+  doc: unknown,
+  requestedMode: string | undefined,
+  sourcePath: string,
+): { resolved: unknown; activeMode: string | null } {
+  if (!isPlainObject(doc)) return { resolved: doc, activeMode: null };
+
+  const declaredModes = doc.modes;
+  const defaultMode = doc.default_mode;
+
+  // Sin modes declarados: tolerar --mode pasado (warning sería bueno pero por
+  // ahora silent) y pasar por el doc tal cual. requestedMode se ignora.
+  if (!Array.isArray(declaredModes) || declaredModes.length === 0) {
+    if (requestedMode !== undefined) {
+      throw new Error(
+        `--mode=${requestedMode} pasado pero el stack en ${sourcePath} no declara 'modes:'`,
+      );
+    }
+    return { resolved: doc, activeMode: null };
+  }
+
+  // Determinar mode activo: param > default_mode > error.
+  let activeMode: string;
+  if (requestedMode !== undefined) {
+    activeMode = requestedMode;
+  } else if (typeof defaultMode === 'string' && defaultMode.length > 0) {
+    activeMode = defaultMode;
+  } else {
+    throw new Error(
+      `stack ${sourcePath} declara modes: [${declaredModes.join(', ')}] pero no se pasó --mode=<x> ni hay default_mode`,
+    );
+  }
+
+  if (!declaredModes.includes(activeMode)) {
+    throw new Error(
+      `--mode=${activeMode} no está en modes: [${declaredModes.join(', ')}] (definidos en ${sourcePath})`,
+    );
+  }
+
+  // Clonar para no mutar el doc original.
+  const out: Record<string, unknown> = { ...doc };
+
+  // Sufijar name con el mode para permitir coexistencia de varios modes del
+  // mismo stack levantados al mismo tiempo (containers/networks/volumes
+  // namespacean por compose project name).
+  if (typeof out.name === 'string') {
+    out.name = `${out.name}-${activeMode}`;
+  }
+
+  // Filtrar services por service.modes y borrar el campo modes del service
+  // (no debe llegar al schema final). Hace una copia del services map.
+  if (isPlainObject(out.services)) {
+    const newServices: Record<string, unknown> = {};
+    for (const [svcName, svc] of Object.entries(out.services)) {
+      if (!isPlainObject(svc)) {
+        newServices[svcName] = svc;
+        continue;
+      }
+      const svcModes = svc.modes;
+      if (Array.isArray(svcModes)) {
+        if (!svcModes.includes(activeMode)) continue; // excluido del mode activo
+        const { modes: _m, ...rest } = svc;
+        newServices[svcName] = rest;
+      } else {
+        newServices[svcName] = svc;
+      }
+    }
+    out.services = newServices;
+  }
+
+  // Resolver {by_mode: {...}} recursivamente en TODO el doc (incluye vars,
+  // common_env, gateway, services, etc).
+  const final = walkResolveByMode(out, activeMode);
+
+  // Cleanup del root: modes/default_mode no deben llegar al schema final.
+  if (isPlainObject(final)) {
+    const cleaned: Record<string, unknown> = { ...final };
+    delete cleaned.modes;
+    delete cleaned.default_mode;
+    return { resolved: cleaned, activeMode };
+  }
+  return { resolved: final, activeMode };
+}
+
+// Resuelve recursivamente cualquier nodo con shape {by_mode: {<mode>: value}}
+// al valor del mode activo. Si el mode no tiene key, el nodo se elimina
+// (devuelve undefined → el caller lo filtra del objeto/array padre).
+// Nodos sin by_mode pasan tal cual (recursivo).
+function walkResolveByMode(node: unknown, mode: string): unknown {
+  if (isPlainObject(node) && 'by_mode' in node && isPlainObject(node.by_mode)) {
+    const picked = node.by_mode[mode];
+    if (picked === undefined) return undefined;
+    return walkResolveByMode(picked, mode);
+  }
+  if (Array.isArray(node)) {
+    const out: unknown[] = [];
+    for (const item of node) {
+      const r = walkResolveByMode(item, mode);
+      if (r !== undefined) out.push(r);
+    }
+    return out;
+  }
+  if (isPlainObject(node)) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(node)) {
+      const r = walkResolveByMode(v, mode);
+      if (r !== undefined) out[k] = r;
+    }
+    return out;
+  }
+  return node;
 }
 
 function formatZodError(err: z.ZodError, source: string): string {

@@ -5,6 +5,12 @@ const serviceNameSchema = z
   .min(1)
   .regex(/^[a-z][a-z0-9_-]*$/, 'service name debe ser kebab/snake-case y empezar con letra');
 
+// Nombre de un mode (p.ej. "local", "cloud"). Mismo formato que stack name.
+const modeNameSchema = z
+  .string()
+  .min(1)
+  .regex(/^[a-z][a-z0-9-]*$/, 'mode debe ser kebab-case y empezar con letra');
+
 const taskNameSchema = z
   .string()
   .min(1)
@@ -38,11 +44,22 @@ const envMetaEntrySchema = z.object({
 });
 const envMetaMapSchema = z.record(z.string(), envMetaEntrySchema);
 
+// auth: delega validación de cada request al servicio nombrado vía nginx
+// `auth_request`. El servicio auth debe responder 2xx en /authorizer y emitir
+// el header `x_decoded_token` con el contexto decodificado — el gateway lo
+// renombra a `x-auth-decoded-token` antes de proxyar al upstream (convención
+// del stack: authorizer emite `x_decoded_token`, los services lo consumen
+// como `x-auth-decoded-token`).
+const routeAuthSchema = z.object({
+  service: serviceNameSchema,
+});
+
 const routeSchema = z.object({
   path: z.string().min(1),
   service: serviceNameSchema,
   strip_prefix: z.boolean().optional(),
   rewrite: z.string().optional(),
+  auth: routeAuthSchema.optional(),
 });
 
 const gatewaySchema = z.object({
@@ -66,6 +83,13 @@ const vscodeServiceSchema = z.object({
 const serviceSchema = z
   .object({
     kind: z.enum(['service', 'oneshot']).default('service'),
+    // Lista de modes en los que este service participa. Si está ausente, el
+    // service va en TODOS los modes (default). El parser filtra los services
+    // cuyo `modes:` no incluye el mode activo ANTES de validar con este
+    // schema — a esta altura el campo ya fue removido por el pre-proceso.
+    // Se declara opcional acá solo para que el doc raw lo acepte; nunca debe
+    // sobrevivir a la validación.
+    modes: z.array(modeNameSchema).optional(),
     image: z.string().optional(),
     build: z.string().optional(),
     repo: z.string().optional(),
@@ -78,6 +102,16 @@ const serviceSchema = z
     needs: z.array(serviceNameSchema).optional(),
     expose_host: z.number().int().positive().optional(),
     volumes: z.array(z.string()).optional(),
+    // Lista de directorios que el renderer "shadow-ea" con named volumes para
+    // que no atraviesen el bind mount del repo (i.e. cruzar VirtioFS host↔VM
+    // en Mac es lento, y los binarios nativos de node_modules son por-OS).
+    // Solo aplica si el service tiene un bind mount ${REPOS_DIR}/X:<working_dir>.
+    // - undefined: usa defaults (node_modules, .next, dist, build, .turbo)
+    // - []: opt-out total
+    // - lista custom: reemplaza los defaults
+    // Si el dev declaró manualmente un volume cuyo target coincide con
+    // <working_dir>/<dir>, no se duplica.
+    shadow_dirs: z.array(z.string().min(1)).optional(),
     command: z.union([z.string(), z.array(z.string())]).optional(),
     databases: z.array(z.string().min(1)).optional(),
     vscode: vscodeServiceSchema.optional(),
@@ -125,6 +159,12 @@ export const stackSchema = z
       .string()
       .min(1)
       .regex(/^[a-z][a-z0-9-]*$/, 'name debe ser kebab-case y empezar con letra'),
+    // Modes declarados. Si está presente, el dev DEBE pasar --mode=<x> al
+    // generar (o setear default_mode). El parser sufija el `name` final con
+    // el mode (p.ej. name: stage-om + mode: local → stage-om-local) para que
+    // ambos modes puedan coexistir levantados.
+    modes: z.array(modeNameSchema).min(1).optional(),
+    default_mode: modeNameSchema.optional(),
     gateway: gatewaySchema.optional(),
     // Variables de plantilla para el stack. Se escriben al .env (al lado de
     // REPOS_DIR, STACK_DIR) y docker compose las interpola en cualquier ${VAR}
@@ -154,6 +194,13 @@ export const stackSchema = z
             code: z.ZodIssueCode.custom,
             path: ['gateway', 'routes', i, 'service'],
             message: `route apunta a service inexistente: ${route.service}`,
+          });
+        }
+        if (route.auth && !names.has(route.auth.service)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['gateway', 'routes', i, 'auth', 'service'],
+            message: `auth.service apunta a service inexistente: ${route.auth.service}`,
           });
         }
       }
@@ -208,6 +255,17 @@ export const stackSchema = z
           code: z.ZodIssueCode.custom,
           path: ['tasks', taskName],
           message: `task '${taskName}' colisiona con un subcomando built-in de om`,
+        });
+      }
+    }
+
+    // default_mode: si está, debe estar en la lista de modes declarados.
+    if (stack.default_mode !== undefined) {
+      if (!stack.modes || !stack.modes.includes(stack.default_mode)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['default_mode'],
+          message: `default_mode '${stack.default_mode}' no está en modes: [${(stack.modes ?? []).join(', ')}]`,
         });
       }
     }

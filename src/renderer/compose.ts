@@ -1,9 +1,15 @@
 import { stringify as stringifyYaml } from 'yaml';
 import { repoSlug } from '../repo.js';
-import { hasBuild, type Stack } from '../schema.js';
+import { hasBuild, type Stack, type Service } from '../schema.js';
 import { renderDbInit } from './db-init.js';
 
 const REPOS_DIR_VAR = '${REPOS_DIR}';
+
+// Directorios "regenerables" que deben vivir dentro del VM Linux (no cruzar
+// el bind mount al host macOS). node_modules tiene además el problema de los
+// binarios nativos OS-specific. Lista usada si el service no declara
+// shadow_dirs explícitamente.
+const DEFAULT_SHADOW_DIRS = ['node_modules', '.next', 'dist', 'build', '.turbo'];
 
 export function renderCompose(stack: Stack): string {
   const services: Record<string, unknown> = {};
@@ -61,11 +67,15 @@ export function renderCompose(stack: Stack): string {
       entry.environment = environment;
     }
 
-    // Volumes — combinar declarados + auto-mount del db-init si aplica.
+    // Volumes — combinar declarados + auto-mount del db-init + auto-shadow
+    // de dirs regenerables (node_modules, .next, etc) si hay bind del repo.
     const volumes: string[] = [...(svc.volumes ?? [])];
     const dbInit = dbInitByService.get(name);
     if (dbInit) {
       volumes.push(`./${dbInit.path}:${dbInit.mountTarget}:ro`);
+    }
+    for (const shadow of autoShadowVolumes(name, svc, volumes)) {
+      volumes.push(shadow);
     }
     if (volumes.length > 0) {
       entry.volumes = volumes;
@@ -150,4 +160,57 @@ function extractNamedVolume(spec: string): string | null {
   if (left.startsWith('/') || left.startsWith('.') || left.includes('$')) return null;
   if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(left)) return null;
   return left;
+}
+
+// Devuelve el target (path container) de una spec `<src>:<target>[:<mode>]`.
+function volumeTarget(spec: string): string | null {
+  const parts = spec.split(':');
+  if (parts.length < 2) return null;
+  return parts[1] ?? null;
+}
+
+// Auto-shadow: si el service monta su repo en working_dir vía bind
+// (${REPOS_DIR}/...:<working_dir>), generar named volumes que "tapen" los
+// dirs regenerables (node_modules, .next, ...) sobre ese mount. Evita que
+// esos dirs cruzen el filesystem boundary host↔VM en Mac (lento) y
+// resuelve los binarios nativos OS-specific de node_modules.
+function autoShadowVolumes(
+  serviceName: string,
+  svc: Service,
+  existingVolumes: string[],
+): string[] {
+  if (!svc.working_dir) return [];
+
+  // El bind del repo tiene que existir y mapear a working_dir.
+  const repoBind = existingVolumes.find((v) => {
+    const target = volumeTarget(v);
+    if (target !== svc.working_dir) return false;
+    return v.startsWith(`${REPOS_DIR_VAR}/`);
+  });
+  if (!repoBind) return [];
+
+  const dirs = svc.shadow_dirs ?? DEFAULT_SHADOW_DIRS;
+  if (dirs.length === 0) return [];
+
+  const existingTargets = new Set(
+    existingVolumes.map((v) => volumeTarget(v)).filter((t): t is string => t !== null),
+  );
+
+  const out: string[] = [];
+  for (const dir of dirs) {
+    const target = `${svc.working_dir}/${dir}`;
+    if (existingTargets.has(target)) continue;
+    const volName = shadowVolumeName(serviceName, dir);
+    out.push(`${volName}:${target}`);
+  }
+  return out;
+}
+
+// Convención de nombre: <service-en-snake>_<dir-sanitizado>. El dir pierde
+// el punto inicial (.next → next) y resto de chars no-alphanum se vuelven _.
+// Replica el patrón histórico `api_auth_node_modules`, `fe_backoffice_v2_next`.
+function shadowVolumeName(serviceName: string, dir: string): string {
+  const svc = serviceName.replace(/-/g, '_');
+  const d = dir.replace(/^\./, '').replace(/[^a-zA-Z0-9_]/g, '_');
+  return `${svc}_${d}`;
 }
