@@ -80,12 +80,20 @@ export function loadStack(stackPath?: string, requestedMode?: string): LoadedSta
 
   const workspaceRoot = computeWorkspaceRoot(workDir);
 
+  // outDir mode-aware: si el stack declara modes, cada mode tiene su propia
+  // carpeta render `.stack/<mode>/`. Permite tener cloud y local levantados
+  // a la vez sin que el render se pise. Stacks sin modes mantienen `.stack/`
+  // plano (compat backward).
+  const outDir = activeMode
+    ? resolve(workspaceRoot, '.stack', activeMode)
+    : resolve(workspaceRoot, '.stack');
+
   return {
     stack,
     sourcePath: absPath,
     workDir,
     workspaceRoot,
-    outDir: resolve(workspaceRoot, '.stack'),
+    outDir,
     locations,
     activeMode,
   };

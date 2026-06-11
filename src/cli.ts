@@ -24,6 +24,7 @@ const COMMANDS = [
   'down',
   'stop',
   'restart',
+  'recreate',
   'build',
   'logs',
   'ps',
@@ -59,12 +60,13 @@ setup:
   om vscode                            genera .vscode/launch.json (attach + browser)
 
 runtime:
-  om up [args...]                      docker compose up -d
-  om down [args...]                    docker compose down (remueve containers)
-  om stop [args...]                    docker compose stop (sin remove)
-  om restart [service]                 docker compose restart
-  om build [service]                   docker compose build
-  om logs [service]                    docker compose logs -f --tail=200
+  om up [service...]                   docker compose up -d (regenera artefactos antes)
+  om down [service...]                 sin args baja todo el stack; con services hace rm -fs de cada uno
+  om stop [service...]                 docker compose stop (sin remove)
+  om restart [service...]              docker compose restart (soft, no recrea)
+  om recreate [service...]             docker compose up -d --force-recreate (aplica cambios de env/config)
+  om build [service...]                docker compose build
+  om logs [service...]                 docker compose logs -f --tail=200
   om ps                                docker compose ps
 
   om help                              muestra esta ayuda
@@ -75,6 +77,8 @@ Sin path explícito, busca el stack.yaml más cercano subiendo desde la carpeta 
 flag global (en cualquier subcomando):
   --mode=<name>                        elige el mode si el stack declara modes:
                                        (p.ej. --mode=local, --mode=cloud)
+                                       Stacks con modes renderizan en .stack/<mode>/
+                                       para que cloud y local puedan convivir.
 `);
 
   // Si hay un stack.yaml resoluble desde el cwd y declara tasks:, listarlas
@@ -153,11 +157,18 @@ function main(argv: string[]): number {
       case 'up':
         return runDockerCompose(['up', '-d', ...rest], mode);
       case 'down':
-        return runDockerCompose(['down', ...rest], mode);
+        // `docker compose down` no acepta servicios — baja todo el stack.
+        // Si el caller pasó services, traducir a `rm -fs <services>` que sí
+        // los baja individualmente (stop + remove sin tocar volumes/networks).
+        return rest.length > 0
+          ? runDockerCompose(['rm', '-fs', ...rest], mode)
+          : runDockerCompose(['down'], mode);
       case 'stop':
         return runDockerCompose(['stop', ...rest], mode);
       case 'restart':
         return runDockerCompose(['restart', ...rest], mode);
+      case 'recreate':
+        return runDockerCompose(['up', '-d', '--force-recreate', ...rest], mode);
       case 'build':
         return runDockerCompose(['build', ...rest], mode);
       case 'logs':
@@ -320,10 +331,11 @@ function generateArtifacts(loaded: LoadedStack, outDir: string): void {
 function runDockerCompose(dockerArgs: string[], mode?: string): number {
   const loaded = loadStack(undefined, mode);
 
-  // `up` auto-regenera compose + vscode launch.json antes de levantar. Garantiza
-  // que el compose levantado refleja el stack.yaml actual y que el debug de
-  // VS Code matchea los puertos del mode activo. Los demás subcomandos
-  // (down/stop/restart/build/logs/ps) usan lo que esté ya generado.
+  // `up` (incluido `up --force-recreate` de `om recreate`) auto-regenera
+  // compose + vscode launch.json antes de levantar. Garantiza que el compose
+  // levantado refleja el stack.yaml actual y que el debug de VS Code matchea
+  // los puertos del mode activo. Los demás subcomandos (down/rm/stop/restart/
+  // build/logs/ps) usan lo que esté ya generado.
   if (dockerArgs[0] === 'up') {
     generateArtifacts(loaded, loaded.outDir);
     generateVscode(loaded);
@@ -391,9 +403,10 @@ function runTaskOrFail(cmd: string, args: string[], mode?: string): number {
 function ensureGenerated(loaded: LoadedStack): void {
   const composePath = join(loaded.outDir, 'docker-compose.yaml');
   if (!existsSync(composePath)) {
+    const modeHint = loaded.activeMode ? ` --mode=${loaded.activeMode}` : '';
     throw new Error(
       `no se encuentra ${relative(process.cwd(), composePath)}\n` +
-        `correr 'om gen' primero`,
+        `correr 'om gen${modeHint}' primero`,
     );
   }
 }
