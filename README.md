@@ -11,23 +11,68 @@ Pensado para stacks chicos donde el orch completo (engine + launcher + profiles 
 
 ## Instalación
 
-`om` se publica en GitHub Packages (privado, scoped a `logieinc`). Para instalarlo en una Mac/Linux/Windows nueva:
+`om` se publica en **GitHub Packages** (privado, scoped a `@logieinc`). Necesitás acceso a la org `logieinc` y un Personal Access Token (PAT) con scope `read:packages`.
 
-**1. Configurar `~/.npmrc`** con el scope y un PAT con `read:packages`:
+### Paso 1 — crear un PAT con `read:packages`
+
+1. Ir a **https://github.com/settings/tokens/new** (classic tokens).
+2. Marcar el scope **`read:packages`** (más `repo` si vas a clonar repos privados de la org).
+3. Generar y copiar el token (empieza con `ghp_…` o `gho_…`).
+
+> Si la cuenta ya tiene PATs creados podés reusar uno que tenga `read:packages`. Para máquinas con `gh` CLI autenticado, alternativamente: `gh auth refresh -h github.com -s read:packages` y después `gh auth token` para leerlo.
+
+### Paso 2 — configurar `~/.npmrc`
+
+Agregar al `~/.npmrc` (sin pisar lo existente):
+
+```bash
+printf '\n@logieinc:registry=https://npm.pkg.github.com\n//npm.pkg.github.com/:_authToken=PEGA_TU_PAT_AQUI\n' >> ~/.npmrc
+```
+
+El archivo final debería tener algo como:
 
 ```
 @logieinc:registry=https://npm.pkg.github.com
-//npm.pkg.github.com/:_authToken=<TU_GH_PAT_CON_read:packages>
+//npm.pkg.github.com/:_authToken=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-**2. Instalar global**:
+### Paso 3 — instalar global
 
 ```bash
 npm install -g @logieinc/orch-mini
 om --version
 ```
 
-### Para desarrollar el propio `om` (no instalar)
+Si tenés instalada la versión vieja del registry público (`orch-mini` sin scope, hasta 0.3.0), desinstalala primero para evitar conflicto:
+
+```bash
+npm uninstall -g orch-mini
+npm install -g @logieinc/orch-mini
+```
+
+### Actualizar a la última versión
+
+```bash
+npm install -g @logieinc/orch-mini@latest
+om --version
+```
+
+### Desinstalar
+
+```bash
+npm uninstall -g @logieinc/orch-mini
+```
+
+### Troubleshooting
+
+| Error al instalar | Causa | Solución |
+|---|---|---|
+| `ENEEDAUTH` | Falta el `_authToken` en `~/.npmrc` | Re-verificá paso 2 |
+| `404 Not Found` en `npm install` | El PAT no tiene `read:packages` o tu cuenta no tiene acceso a `logieinc` | Crear PAT con scope correcto; pedirle a un admin de `logieinc` que te dé acceso |
+| `npm error code E401` | PAT expirado o revocado | Regenerar PAT, actualizar `~/.npmrc` |
+| `om: command not found` después del install | El dir global de `npm` no está en `PATH` | `npm config get prefix` te dice dónde fueron a parar los binarios; agregar ese `bin/` al `$PATH` en `~/.zshrc` |
+
+### Para desarrollar el propio `om` (en lugar de instalar)
 
 ```bash
 git clone git@github.com:logieinc/orch-mini.git
@@ -37,6 +82,20 @@ npm link               # registra el comando `om` globalmente apuntando al check
 ```
 
 Funciona igual en Mac, Linux y Windows — `npm link` crea el wrapper apropiado por OS.
+
+### Para publicar una versión nueva (mantainers)
+
+1. Bumpear `version` en `package.json` siguiendo semver (`0.X.Y → 0.X+1.0` para breaking, `0.X.Y+1` para features/fixes).
+2. Asegurarse que `~/.npmrc` tenga un PAT con scope **`write:packages`** (además de `read:packages`):
+   ```
+   //npm.pkg.github.com/:_authToken=ghp_xxx_con_write:packages
+   ```
+3. Desde `main` actualizado:
+   ```bash
+   git checkout main && git pull
+   npm publish
+   ```
+4. El package aparece en https://github.com/logieinc/orch-mini/packages.
 
 ## Layout del proyecto
 
