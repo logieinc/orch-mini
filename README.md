@@ -11,9 +11,29 @@ Pensado para stacks chicos donde el orch completo (engine + launcher + profiles 
 
 ## Instalación
 
+`om` se publica en GitHub Packages (privado, scoped a `logieinc`). Para instalarlo en una Mac/Linux/Windows nueva:
+
+**1. Configurar `~/.npmrc`** con el scope y un PAT con `read:packages`:
+
+```
+@logieinc:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=<TU_GH_PAT_CON_read:packages>
+```
+
+**2. Instalar global**:
+
 ```bash
+npm install -g @logieinc/orch-mini
+om --version
+```
+
+### Para desarrollar el propio `om` (no instalar)
+
+```bash
+git clone git@github.com:logieinc/orch-mini.git
+cd orch-mini
 npm install
-npm link               # registra el comando `om` globalmente
+npm link               # registra el comando `om` globalmente apuntando al checkout local
 ```
 
 Funciona igual en Mac, Linux y Windows — `npm link` crea el wrapper apropiado por OS.
