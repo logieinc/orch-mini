@@ -48,37 +48,77 @@ function readVersion(): string {
 
 const VERSION = readVersion();
 
+// ANSI styling — respeta NO_COLOR (https://no-color.org/) y solo colorea si
+// stdout es TTY. Cuando se pipea o redirige a archivo, todo se ve plano.
+const COLOR_ENABLED = process.stdout.isTTY === true && !process.env.NO_COLOR;
+const c = (code: string, text: string): string =>
+  COLOR_ENABLED ? `\x1b[${code}m${text}\x1b[0m` : text;
+const bold = (t: string) => c('1', t);
+const dim = (t: string) => c('2', t);
+const cyan = (t: string) => c('36', t);
+const yellow = (t: string) => c('33', t);
+const magenta = (t: string) => c('35', t);
+const green = (t: string) => c('32', t);
+
+// Pinta una línea de comando: el `om <cmd>` se resalta en cyan/bold, los
+// `[args]` opcionales en dim, y la descripción queda en color normal.
+function cmdLine(cmd: string, desc: string): string {
+  const cmdPad = 38;
+  // Resaltar el verbo (primera palabra después de "om") en cyan.
+  const m = cmd.match(/^(om )(\S+)( .*)?$/);
+  let styled: string;
+  if (m) {
+    const om = m[1] ?? '';
+    const verb = m[2] ?? '';
+    const rest = m[3] ?? '';
+    const restStyled = rest.replace(/\[[^\]]+\]/g, (x) => dim(x));
+    styled = dim(om) + cyan(verb) + restStyled;
+  } else {
+    styled = cmd;
+  }
+  // Padding: cuento el ancho visible (sin códigos ANSI) para alinear bien.
+  const visibleLen = cmd.length;
+  const padding = ' '.repeat(Math.max(2, cmdPad - visibleLen));
+  return `  ${styled}${padding}${desc}`;
+}
+
 function printUsage(mode?: string): void {
-  console.log(`om v${VERSION} — orquestador declarativo mínimo
+  const title = `${bold(magenta('om'))} ${dim('v' + VERSION)} ${dim('—')} ${bold('orquestador declarativo mínimo')}`;
+  const rule = dim('─'.repeat(60));
 
-setup:
-  om init                              crea un stack.yaml template en la carpeta actual
-  om sync                              clone/pull de los repos declarados (services.*.repo)
-  om gen [stack.yaml] [--out <dir>]    rinde compose + nginx + scripts en .stack/
-  om validate [stack.yaml]             solo valida el stack
-  om info                              resumen del stack + qué probablemente quieras tocar
-  om vscode                            genera .vscode/launch.json (attach + browser)
+  console.log(`
+${title}
+${rule}
 
-runtime:
-  om up [service...]                   docker compose up -d (regenera artefactos antes)
-  om down [service...]                 sin args baja todo el stack; con services hace rm -fs de cada uno
-  om stop [service...]                 docker compose stop (sin remove)
-  om restart [service...]              docker compose restart (soft, no recrea)
-  om recreate [service...]             docker compose up -d --force-recreate (aplica cambios de env/config)
-  om build [service...]                docker compose build
-  om logs [service...]                 docker compose logs -f --tail=200
-  om ps                                docker compose ps
+${bold(yellow('setup'))}
+${cmdLine('om init',                          'crea un stack.yaml template en la carpeta actual')}
+${cmdLine('om sync',                          'clone/pull de los repos declarados (services.*.repo)')}
+${cmdLine('om gen [stack.yaml] [--out <dir>]','rinde compose + nginx + scripts en .stack/')}
+${cmdLine('om validate [stack.yaml]',         'solo valida el stack')}
+${cmdLine('om info',                          'resumen del stack + qué probablemente quieras tocar')}
+${cmdLine('om vscode',                        'genera .vscode/launch.json (attach + browser)')}
 
-  om help                              muestra esta ayuda
-  om version | --version | -v          muestra la versión del CLI (${VERSION})
+${bold(green('runtime'))}
+${cmdLine('om up [service...]',               'docker compose up -d ' + dim('(regenera artefactos antes)'))}
+${cmdLine('om down [service...]',             'sin args baja todo; con services hace ' + dim('rm -fs'))}
+${cmdLine('om stop [service...]',             'docker compose stop ' + dim('(sin remove)'))}
+${cmdLine('om restart [service...]',          'docker compose restart ' + dim('(soft, no recrea)'))}
+${cmdLine('om recreate [service...]',         'up -d --force-recreate ' + dim('(aplica cambios de env)'))}
+${cmdLine('om build [service...]',            'docker compose build')}
+${cmdLine('om logs [service...]',             'docker compose logs -f --tail=200')}
+${cmdLine('om ps',                            'docker compose ps')}
 
-Sin path explícito, busca el stack.yaml más cercano subiendo desde la carpeta actual.
+${bold(dim('meta'))}
+${cmdLine('om help',                          'muestra esta ayuda')}
+${cmdLine('om version | --version | -v',      'muestra la versión del CLI ' + dim('(' + VERSION + ')'))}
 
-flag global (en cualquier subcomando):
-  --mode=<name>                        elige el mode si el stack declara modes:
-                                       (p.ej. --mode=local, --mode=cloud)
-                                       Stacks con modes renderizan en .stack/<mode>/
-                                       para que cloud y local puedan convivir.
+${dim('Sin path explícito, busca el stack.yaml más cercano subiendo desde la carpeta actual.')}
+
+${bold(yellow('flag global'))} ${dim('(en cualquier subcomando)')}
+  ${cyan('--mode=<name>')}${' '.repeat(24)}elige el mode si el stack declara ${bold('modes:')}
+  ${' '.repeat(37)}${dim('p.ej.')} --mode=local, --mode=cloud
+  ${' '.repeat(37)}${dim('stacks con modes renderizan en .stack/<mode>/')}
+  ${' '.repeat(37)}${dim('para que cloud y local puedan convivir')}
 `);
 
   // Si hay un stack.yaml resoluble desde el cwd y declara tasks:, listarlas
@@ -87,10 +127,10 @@ flag global (en cualquier subcomando):
     const loaded = loadStack(undefined, mode);
     const tasks = loaded.stack.tasks;
     if (tasks && Object.keys(tasks).length > 0) {
-      console.log(`tasks (de ${loaded.stack.name}):`);
+      console.log(`${bold(magenta('tasks'))} ${dim('(de ' + loaded.stack.name + ')')}`);
       const maxName = Math.max(...Object.keys(tasks).map((n) => n.length));
       for (const [name, t] of Object.entries(tasks)) {
-        console.log(`  om ${name.padEnd(maxName + 2)} ${t.description}`);
+        console.log(cmdLine(`om ${name}`, t.description).padEnd(maxName + 2));
       }
       console.log('');
     }
