@@ -281,13 +281,32 @@ export function runSync(mode?: string): number {
     }`,
   );
 
-  const results = syncStack(loaded.stack, { workDir: loaded.workspaceRoot, reposDir });
+  const results = syncStack(loaded.stack, { workDir: loaded.workspaceRoot, reposDir }, (service, action) => {
+    let actionLabel = 'procesando...';
+    if (action === 'clone') actionLabel = '\x1b[36mcloning...\x1b[0m';
+    if (action === 'pull') actionLabel = '\x1b[36mfetching...\x1b[0m';
+    if (action === 'switch') actionLabel = '\x1b[35mswitching...\x1b[0m';
+    if (action === 'local') actionLabel = '\x1b[2mlocal...\x1b[0m';
+
+    if (process.stdout.isTTY) {
+      readline.clearLine(process.stdout, 0);
+      readline.cursorTo(process.stdout, 0);
+      process.stdout.write(`  · ${service.padEnd(25)} ${actionLabel}`);
+    } else {
+      console.log(`  · ${service.padEnd(25)} ${actionLabel}`);
+    }
+  });
+
+  if (process.stdout.isTTY) {
+    readline.clearLine(process.stdout, 0);
+    readline.cursorTo(process.stdout, 0);
+  }
 
   let failed = 0;
   for (const r of results) {
     const icon = iconFor(r);
     const detail = r.message ? ` — ${r.message}` : '';
-    console.log(`  ${icon} ${r.service.padEnd(20)} ${r.action}${detail}`);
+    console.log(`  ${icon} ${r.service.padEnd(25)} ${r.action}${detail}`);
     if (r.action === 'failed' || r.action === 'local-missing') failed++;
   }
 

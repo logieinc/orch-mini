@@ -22,6 +22,7 @@ export type SyncResult = {
 export function syncStack(
   stack: Stack,
   opts: { workDir: string; reposDir: string },
+  onStart?: (service: string, action: 'clone' | 'pull' | 'switch' | 'local') => void,
 ): SyncResult[] {
   const results: SyncResult[] = [];
   const seenSlugs = new Set<string>();
@@ -42,7 +43,7 @@ export function syncStack(
       continue;
     }
     seenSlugs.add(slug);
-    results.push(syncOne(name, svc.repo, svc.ref, opts));
+    results.push(syncOne(name, svc.repo, svc.ref, opts, onStart));
   }
 
   return results;
@@ -53,8 +54,10 @@ function syncOne(
   repo: string,
   ref: string | undefined,
   opts: { workDir: string; reposDir: string },
+  onStart?: (service: string, action: 'clone' | 'pull' | 'switch' | 'local') => void,
 ): SyncResult {
   if (isLocalRepo(repo)) {
+    if (onStart) onStart(service, 'local');
     const abs = isAbsolute(repo) ? repo : resolve(opts.workDir, repo);
     if (existsSync(abs)) {
       return { service, repo, action: 'local-ok', message: abs };
@@ -72,6 +75,7 @@ function syncOne(
       const current = git(['rev-parse', '--abbrev-ref', 'HEAD'], targetDir);
       const currentBranch = current.stdout.trim();
       if (currentBranch !== ref) {
+        if (onStart) onStart(service, 'switch');
         const fetchRes = git(['fetch', 'origin', ref], targetDir);
         if (fetchRes.status !== 0) {
           return {
@@ -93,12 +97,15 @@ function syncOne(
         return { service, repo, action: 'switched', message: `${targetDir} → ${ref}` };
       }
     }
+    if (onStart) onStart(service, 'pull');
     const pullRes = git(['pull', '--ff-only'], targetDir);
     if (pullRes.status !== 0) {
       return { service, repo, action: 'failed', message: `git pull falló: ${pullRes.stderr}` };
     }
     return { service, repo, action: 'pulled', message: targetDir };
   }
+
+  if (onStart) onStart(service, 'clone');
 
   if (existsSync(targetDir) && !existsSync(join(targetDir, '.git'))) {
     try {
