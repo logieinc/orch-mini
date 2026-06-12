@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { loadStack, type LoadedStack } from './parser.js';
+import { renderMermaid } from './renderer/graph.js';
 
 export interface MenuContext {
   runDockerCompose: (args: string[], mode?: string) => number;
@@ -168,6 +169,7 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       "📋  om logs       (Ver logs de servicios)",
       "🐚  om shell      (Entrar a la consola de un servicio)",
       "🧹  om prune      (Limpieza total: borrar volumes y datos)",
+      "📊  om graph      (Generar diagrama Mermaid del stack)",
       "📥  om sync       (Sincronizar repositorios Git)",
       "⚙️   om gen        (Regenerar compose/nginx/scripts)",
       "🔍  om validate   (Validar stack.yaml)",
@@ -341,27 +343,37 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       await runAction(() => context.runDockerCompose(['down', '-v', '--remove-orphans'], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 8) { // om sync
+    } else if (mainChoice === 8) { // om graph
+      console.clear();
+      console.log(`\n  \x1b[1m\x1b[35mom\x1b[0m \x1b[1m— Diagrama de Arquitectura (Mermaid)\x1b[0m`);
+      console.log(`  \x1b[2m════════════════════════════════════════\x1b[0m`);
+      const mermaidStr = renderMermaid(stack);
+      console.log(mermaidStr);
+      console.log(`  \x1b[2m────────────────────────────────────────\x1b[0m`);
+      console.log(`  \x1b[32m💡 Copia el texto anterior y pégalo en un visor de Mermaid o en tu archivo Markdown.\x1b[0m`);
+      await pressAnyKeyToContinue();
+
+    } else if (mainChoice === 9) { // om sync
       console.clear();
       await runAction(() => context.runSync(activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 9) { // om gen
+    } else if (mainChoice === 10) { // om gen
       console.clear();
       await runAction(() => context.runGen([], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 10) { // om validate
+    } else if (mainChoice === 11) { // om validate
       console.clear();
       await runAction(() => context.runValidate([], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 11) { // om vscode
+    } else if (mainChoice === 12) { // om vscode
       console.clear();
       await runAction(() => context.runVscode(activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 12) { // om doctor
+    } else if (mainChoice === 13) { // om doctor
       console.clear();
       await runAction(() => context.runDoctor(undefined, activeModeStr));
       await pressAnyKeyToContinue();
