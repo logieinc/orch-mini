@@ -46,6 +46,9 @@ http {
     sendfile on;
     keepalive_timeout 65;
     client_max_body_size 50m;
+    proxy_buffer_size 128k;
+    proxy_buffers 4 256k;
+    proxy_busy_buffers_size 256k;
 
 ${indent(upstreams, 4)}
 
