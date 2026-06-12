@@ -46,15 +46,19 @@ export function renderMermaid(stack: Stack): string {
       const depName = typeof dep === 'string' ? dep : dep.service;
       let condLabel = '';
       if (typeof dep === 'object' && dep.condition) {
-        condLabel = `\\n[${dep.condition}]`;
+        condLabel = `[${dep.condition}]`;
       } else {
         // Si el dependiente tiene healthcheck, por defecto el condLabel se puede inferir
         const depSvc = stack.services[depName];
         if (depSvc && depSvc.healthcheck) {
-          condLabel = '\\n[service_healthy]';
+          condLabel = '[service_healthy]';
         }
       }
-      lines.push(`  ${name} -->|"${condLabel}"| ${depName}`);
+      if (condLabel) {
+        lines.push(`  ${name} -->|"${condLabel}"| ${depName}`);
+      } else {
+        lines.push(`  ${name} --> ${depName}`);
+      }
     }
   }
   lines.push('');
