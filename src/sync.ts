@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { isLocalRepo, normalizeGitUrl, repoSlug } from './repo.js';
 import { hasRepo, type Stack } from './schema.js';
@@ -98,6 +98,19 @@ function syncOne(
       return { service, repo, action: 'failed', message: `git pull falló: ${pullRes.stderr}` };
     }
     return { service, repo, action: 'pulled', message: targetDir };
+  }
+
+  if (existsSync(targetDir) && !existsSync(join(targetDir, '.git'))) {
+    try {
+      rmSync(targetDir, { recursive: true, force: true });
+    } catch {
+      return {
+        service,
+        repo,
+        action: 'failed',
+        message: `la carpeta repos/${slug} ya existe y no se pudo limpiar. Detén el stack con 'om down' e intenta de nuevo.`,
+      };
+    }
   }
 
   const cloneArgs = ['clone'];
