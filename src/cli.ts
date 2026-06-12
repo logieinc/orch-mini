@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import readline from 'node:readline';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,8 @@ import { renderNginx } from './renderer/nginx.js';
 import { renderScripts } from './renderer/scripts.js';
 import { renderVscodeLaunch } from './renderer/vscode.js';
 import { syncStack, type SyncResult } from './sync.js';
+import { runMenu, selectOption } from './menu.js';
+import { runDoctor } from './doctor.js';
 
 const COMMANDS = [
   'init',
@@ -28,6 +31,11 @@ const COMMANDS = [
   'build',
   'logs',
   'ps',
+  'menu',
+  'doctor',
+  'shell',
+  'exec',
+  'prune',
   'help',
   'version',
 ] as const;
@@ -97,6 +105,8 @@ ${cmdLine('om gen [stack.yaml] [--out <dir>]','rinde compose + nginx + scripts e
 ${cmdLine('om validate [stack.yaml]',         'solo valida el stack')}
 ${cmdLine('om info',                          'resumen del stack + qué probablemente quieras tocar')}
 ${cmdLine('om vscode',                        'genera .vscode/launch.json (attach + browser)')}
+${cmdLine('om menu',                          'abre el menú interactivo de consola')}
+${cmdLine('om doctor',                        'verifica el estado de docker, puertos y repositorios')}
 
 ${bold(green('runtime'))}
 ${cmdLine('om up [service...]',               'docker compose up -d ' + dim('(regenera artefactos antes)'))}
@@ -107,6 +117,9 @@ ${cmdLine('om recreate [service...]',         'up -d --force-recreate ' + dim('(
 ${cmdLine('om build [service...]',            'docker compose build')}
 ${cmdLine('om logs [service...]',             'docker compose logs -f --tail=200')}
 ${cmdLine('om ps',                            'docker compose ps')}
+${cmdLine('om shell [service]',               'entra a la consola (sh) de un servicio')}
+${cmdLine('om exec <service> <cmd> [args...]', 'ejecuta un comando en un contenedor')}
+${cmdLine('om prune [--force]',               'detiene y remueve contenedores, redes y volúmenes')}
 
 ${bold(dim('meta'))}
 ${cmdLine('om help',                          'muestra esta ayuda')}
@@ -160,7 +173,7 @@ function extractModeArg(argv: string[]): { mode: string | undefined; rest: strin
   return { mode, rest };
 }
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   const { mode, rest: argvNoMode } = extractModeArg(argv);
   const [cmd, ...rest] = argvNoMode;
 
@@ -194,6 +207,12 @@ function main(argv: string[]): number {
         return runInfo(mode);
       case 'vscode':
         return runVscode(mode);
+      case 'menu':
+        return await runMenu({ runDockerCompose, runSync, runValidate, runGen, runVscode, runDoctor }, mode);
+      case 'doctor': {
+        const { stackPath } = parseStackArg(rest);
+        return await runDoctor(stackPath, mode);
+      }
       case 'up':
         return runDockerCompose(['up', '-d', ...rest], mode);
       case 'down':
@@ -215,6 +234,12 @@ function main(argv: string[]): number {
         return runDockerCompose(['logs', '-f', '--tail=200', ...rest], mode);
       case 'ps':
         return runDockerCompose(['ps', ...rest], mode);
+      case 'shell':
+        return await runShell(rest, mode);
+      case 'exec':
+        return runExec(rest, mode);
+      case 'prune':
+        return await runPrune(rest, mode);
     }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -240,7 +265,7 @@ function runInit(): number {
   return 1;
 }
 
-function runSync(mode?: string): number {
+export function runSync(mode?: string): number {
   const loaded = loadStack(undefined, mode);
   const reposDir = resolve(loaded.workspaceRoot, 'repos');
   mkdirSync(reposDir, { recursive: true });
@@ -280,11 +305,12 @@ function iconFor(r: SyncResult): string {
   }
 }
 
-function runValidate(args: string[], mode?: string): number {
+export function runValidate(args: string[], mode?: string): number {
   const { stackPath } = parseStackArg(args);
-  const { stack, activeMode } = loadStack(stackPath, mode);
+  const { stack, activeMode, overridePath } = loadStack(stackPath, mode);
   const modeLabel = activeMode ? ` (mode: ${activeMode})` : '';
-  console.log(`✓ ${stack.name} — ${Object.keys(stack.services).length} services${modeLabel}`);
+  const overrideLabel = overridePath ? ' (con override local)' : '';
+  console.log(`✓ ${stack.name} — ${Object.keys(stack.services).length} services${modeLabel}${overrideLabel}`);
   return 0;
 }
 
@@ -294,7 +320,7 @@ function runInfo(mode?: string): number {
   return 0;
 }
 
-function runVscode(mode?: string): number {
+export function runVscode(mode?: string): number {
   const loaded = loadStack(undefined, mode);
   generateVscode(loaded);
   return 0;
@@ -315,7 +341,7 @@ function generateVscode(loaded: LoadedStack): void {
   console.log(`  ${debugCount} attach configs · ${browserCount} browser launchers`);
 }
 
-function runGen(args: string[], mode?: string): number {
+export function runGen(args: string[], mode?: string): number {
   const { stackPath, rest } = parseStackArg(args);
   const outIdx = rest.indexOf('--out');
   const explicitOut = outIdx >= 0 ? rest[outIdx + 1] : undefined;
@@ -368,7 +394,7 @@ function generateArtifacts(loaded: LoadedStack, outDir: string): void {
   );
 }
 
-function runDockerCompose(dockerArgs: string[], mode?: string): number {
+export function runDockerCompose(dockerArgs: string[], mode?: string): number {
   const loaded = loadStack(undefined, mode);
 
   // `up` (incluido `up --force-recreate` de `om recreate`) auto-regenera
@@ -451,4 +477,84 @@ function ensureGenerated(loaded: LoadedStack): void {
   }
 }
 
-process.exit(main(process.argv.slice(2)));
+async function runShell(args: string[], mode?: string): Promise<number> {
+  const loaded = loadStack(undefined, mode);
+  const serviceNames = Object.keys(loaded.stack.services);
+
+  let svc = args[0];
+  if (!svc) {
+    if (serviceNames.length === 0) {
+      console.error('El stack no tiene servicios definidos.');
+      return 1;
+    }
+    if (serviceNames.length === 1) {
+      svc = serviceNames[0]!;
+    } else {
+      const choice = await selectOption('Selecciona un servicio para entrar a su shell:', [
+        ...serviceNames,
+        '[Cancelar]'
+      ]);
+      if (choice === serviceNames.length) {
+        return 0; // cancelado
+      }
+      svc = serviceNames[choice]!;
+      console.clear();
+    }
+  }
+
+  if (!loaded.stack.services[svc]) {
+    console.error(`Error: el servicio "${svc}" no existe en el stack.`);
+    return 1;
+  }
+
+  return runDockerCompose(['exec', svc, 'sh'], mode);
+}
+
+function runExec(args: string[], mode?: string): number {
+  if (args.length < 2) {
+    console.error('Uso: om exec <service> <comando> [args...]');
+    return 1;
+  }
+  const [svc, ...cmdArgs] = args;
+  const loaded = loadStack(undefined, mode);
+  if (!loaded.stack.services[svc!]) {
+    console.error(`Error: el servicio "${svc}" no existe en el stack.`);
+    return 1;
+  }
+  return runDockerCompose(['exec', svc!, ...cmdArgs], mode);
+}
+
+async function runPrune(args: string[], mode?: string): Promise<number> {
+  const force = args.includes('--force') || args.includes('-y') || args.includes('-f');
+
+  if (!force) {
+    console.log('\x1b[33m⚠️  ¡ADVERTENCIA! Esta acción detendrá el stack y ELIMINARÁ todos los volúmenes de base de datos y datos locales.\x1b[0m');
+    const confirmed = await askConfirmation('¿Estás seguro de que deseas continuar?');
+    if (!confirmed) {
+      console.log('Operación cancelada.');
+      return 0;
+    }
+  }
+
+  console.log('Limpiando recursos del stack...');
+  return runDockerCompose(['down', '-v', '--remove-orphans'], mode);
+}
+
+function askConfirmation(question: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+    rl.question(`  ${question} (s/N): `, (answer) => {
+      rl.close();
+      const val = answer.toLowerCase().trim();
+      resolve(val === 's' || val === 'y' || val === 'si');
+    });
+  });
+}
+
+main(process.argv.slice(2)).then(code => process.exit(code)).catch(err => {
+  console.error(err);
+  process.exit(1);
+});

@@ -77,6 +77,22 @@ const vscodeServiceSchema = z.object({
   browser: vscodeBrowserSchema.optional(),
 });
 
+const needSchema = z.union([
+  serviceNameSchema,
+  z.object({
+    service: serviceNameSchema,
+    condition: z.enum(['service_started', 'service_healthy', 'service_completed_successfully']).optional(),
+  }),
+]);
+
+const healthcheckSchema = z.object({
+  test: z.union([z.string(), z.array(z.string())]),
+  interval: z.string().optional(),
+  timeout: z.string().optional(),
+  retries: z.number().int().positive().optional(),
+  start_period: z.string().optional(),
+});
+
 // Una entrada de service única. `image` y `build` son mutuamente excluyentes
 // pero al menos uno tiene que estar. `repo` es opcional para ambos (sirve a sync).
 // Para oneshot, `port` también es opcional (jobs efímeros no escuchan).
@@ -105,7 +121,8 @@ const serviceSchema = z
     debug_port: z.number().int().positive().optional(),
     env: envMapSchema.optional(),
     env_meta: envMetaMapSchema.optional(),
-    needs: z.array(serviceNameSchema).optional(),
+    needs: z.array(needSchema).optional(),
+    healthcheck: healthcheckSchema.optional(),
     expose_host: z.number().int().positive().optional(),
     volumes: z.array(z.string()).optional(),
     // Lista de directorios que el renderer "shadow-ea" con named volumes para
@@ -220,14 +237,15 @@ export const stackSchema = z
 
     for (const [svcName, svc] of Object.entries(stack.services)) {
       for (const [i, dep] of (svc.needs ?? []).entries()) {
-        if (!names.has(dep)) {
+        const depName = typeof dep === 'string' ? dep : dep.service;
+        if (!names.has(depName)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['services', svcName, 'needs', i],
-            message: `needs apunta a service inexistente: ${dep}`,
+            message: `needs apunta a service inexistente: ${depName}`,
           });
         }
-        if (dep === svcName) {
+        if (depName === svcName) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['services', svcName, 'needs', i],

@@ -89,8 +89,12 @@ export function renderCompose(stack: Stack): string {
       entry.command = svc.command;
     }
 
+    if (svc.healthcheck !== undefined) {
+      entry.healthcheck = svc.healthcheck;
+    }
+
     if (svc.needs && svc.needs.length > 0) {
-      entry.depends_on = renderDependsOn(svc.needs, oneshotSet);
+      entry.depends_on = renderDependsOn(svc.needs, oneshotSet, stack.services);
     }
 
     // networks: 'default' siempre + cualquier external declarada en extra_networks.
@@ -130,18 +134,35 @@ export function renderCompose(stack: Stack): string {
   return stringifyYaml(compose, { lineWidth: 0 });
 }
 
-function renderDependsOn(needs: string[], oneshotSet: Set<string>): unknown {
-  // Si TODOS los needs son services normales, formato array (más simple/legible).
-  // Si alguno es oneshot, usar formato objeto extendido para poder declarar
-  // condition: service_completed_successfully en los oneshots.
-  const hasOneshot = needs.some((n) => oneshotSet.has(n));
-  if (!hasOneshot) return [...needs];
+function renderDependsOn(needs: any[], oneshotSet: Set<string>, services: Stack['services']): unknown {
+  const hasOneshot = needs.some((n) => {
+    const name = typeof n === 'string' ? n : n.service;
+    return oneshotSet.has(name);
+  });
+
+  const hasCustomCondition = needs.some((n) => {
+    const name = typeof n === 'string' ? n : n.service;
+    if (typeof n === 'object' && n.condition !== undefined) return true;
+    if (services[name]?.healthcheck !== undefined) return true;
+    return false;
+  });
+
+  if (!hasOneshot && !hasCustomCondition) {
+    return needs.map((n) => (typeof n === 'string' ? n : n.service));
+  }
 
   const out: Record<string, { condition: string }> = {};
   for (const n of needs) {
-    out[n] = {
-      condition: oneshotSet.has(n) ? 'service_completed_successfully' : 'service_started',
-    };
+    const name = typeof n === 'string' ? n : n.service;
+    let cond = 'service_started';
+    if (typeof n === 'object' && n.condition) {
+      cond = n.condition;
+    } else if (oneshotSet.has(name)) {
+      cond = 'service_completed_successfully';
+    } else if (services[name]?.healthcheck !== undefined) {
+      cond = 'service_healthy';
+    }
+    out[name] = { condition: cond };
   }
   return out;
 }
@@ -156,7 +177,7 @@ function renderGatewayService(
     image: 'nginx:1.27-alpine',
     ports: [`${stack.gateway!.port}:80`],
     volumes: ['./nginx.conf:/etc/nginx/nginx.conf:ro'],
-    depends_on: renderDependsOn(targets, oneshotSet),
+    depends_on: renderDependsOn(targets, oneshotSet, stack.services),
     networks: ['default'],
     restart: 'unless-stopped',
   };

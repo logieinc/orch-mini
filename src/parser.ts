@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { basename, dirname, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { basename, dirname, join, parse, resolve } from 'node:path';
 import { isMap, isPair, isScalar, LineCounter, parseDocument } from 'yaml';
 import { z } from 'zod';
 import { expandFileRefs } from './file-refs.js';
@@ -13,11 +13,13 @@ export type Locations = Map<string, { line: number; col: number }>;
 export type LoadedStack = {
   stack: Stack;
   sourcePath: string;
+  overridePath?: string;    // path al override local cargado (si existe)
   workDir: string;          // dirname(stack.yaml)
   workspaceRoot: string;    // donde van repos/ y .stack/ — padre del workDir si el yaml vive en arch/
   outDir: string;           // workspaceRoot/.stack
   locations: Locations;
   activeMode: string | null;  // mode activo (null si el stack no declara modes)
+  declaredModes?: string[];   // modes declarados en stack.yaml (si existen)
 };
 
 export function loadStack(stackPath?: string, requestedMode?: string): LoadedStack {
@@ -55,12 +57,35 @@ export function loadStack(stackPath?: string, requestedMode?: string): LoadedSta
   const locations = collectLocations(docNode, lineCounter);
 
   // Plain JS desde el AST para los pasos siguientes.
-  const docPlain = docNode.toJSON();
+  let docPlain = docNode.toJSON();
+
+  // Buscar stack.override.yaml o stack.override.yml en la misma carpeta
+  const parsedPath = parse(absPath);
+  const overrideYamlPath = join(parsedPath.dir, 'stack.override.yaml');
+  const overrideYmlPath = join(parsedPath.dir, 'stack.override.yml');
+  let overridePath: string | undefined;
+  if (existsSync(overrideYamlPath)) {
+    overridePath = overrideYamlPath;
+  } else if (existsSync(overrideYmlPath)) {
+    overridePath = overrideYmlPath;
+  }
+
+  if (overridePath) {
+    try {
+      const overrideRaw = readFileSync(overridePath, 'utf8');
+      const overrideDoc = parseDocument(overrideRaw);
+      const overridePlain = overrideDoc.toJSON() || {};
+      docPlain = deepMerge(docPlain, overridePlain);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`YAML de override inválido en ${overridePath}: ${msg}`);
+    }
+  }
 
   // Resolver modes ANTES de cualquier otra transformación. Filtra services
   // por `modes:`, resuelve `{by_mode: {...}}` al mode activo, sufija el name
   // del stack con el mode, y borra los campos modes/default_mode del root.
-  const { resolved, activeMode } = applyModes(docPlain, requestedMode, absPath);
+  const { resolved, activeMode, declaredModes } = applyModes(docPlain, requestedMode, absPath);
 
   // Expandir ${file:path} antes de validar — paths se resuelven relativo al workDir.
   const expanded = expandFileRefs(resolved, workDir);
@@ -91,11 +116,13 @@ export function loadStack(stackPath?: string, requestedMode?: string): LoadedSta
   return {
     stack,
     sourcePath: absPath,
+    overridePath,
     workDir,
     workspaceRoot,
     outDir,
     locations,
     activeMode,
+    declaredModes,
   };
 }
 
@@ -254,7 +281,7 @@ function applyModes(
   doc: unknown,
   requestedMode: string | undefined,
   sourcePath: string,
-): { resolved: unknown; activeMode: string | null } {
+): { resolved: unknown; activeMode: string | null; declaredModes?: string[] } {
   if (!isPlainObject(doc)) return { resolved: doc, activeMode: null };
 
   const declaredModes = doc.modes;
@@ -329,9 +356,9 @@ function applyModes(
     const cleaned: Record<string, unknown> = { ...final };
     delete cleaned.modes;
     delete cleaned.default_mode;
-    return { resolved: cleaned, activeMode };
+    return { resolved: cleaned, activeMode, declaredModes: declaredModes.map(String) };
   }
-  return { resolved: final, activeMode };
+  return { resolved: final, activeMode, declaredModes: declaredModes.map(String) };
 }
 
 // Resuelve recursivamente cualquier nodo con shape {by_mode: {<mode>: value}}
@@ -369,4 +396,23 @@ function formatZodError(err: z.ZodError, source: string): string {
     return `  - ${path}: ${issue.message}`;
   });
   return `stack inválido (${source}):\n${lines.join('\n')}`;
+}
+
+function deepMerge(target: any, source: any): any {
+  if (isPlainObject(target) && isPlainObject(source)) {
+    const result = { ...target };
+    for (const key of Object.keys(source)) {
+      if (isPlainObject(source[key])) {
+        if (key in target) {
+          result[key] = deepMerge(target[key], source[key]);
+        } else {
+          result[key] = source[key];
+        }
+      } else {
+        result[key] = source[key];
+      }
+    }
+    return result;
+  }
+  return source;
 }
