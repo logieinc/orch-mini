@@ -291,8 +291,8 @@ function applyModes(
   // ahora silent) y pasar por el doc tal cual. requestedMode se ignora.
   if (!Array.isArray(declaredModes) || declaredModes.length === 0) {
     if (requestedMode !== undefined) {
-      throw new Error(
-        `--mode=${requestedMode} pasado pero el stack en ${sourcePath} no declara 'modes:'`,
+      console.warn(
+        `\x1b[33m⚠ Advertencia: --mode=${requestedMode} pasado pero el stack en ${sourcePath} no declara 'modes:'. Será ignorado.\x1b[0m`,
       );
     }
     return { resolved: doc, activeMode: null };
