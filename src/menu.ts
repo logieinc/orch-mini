@@ -4,6 +4,9 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { loadStack, type LoadedStack } from './parser.js';
 import { renderMermaid } from './renderer/graph.js';
+import { hasRepo } from './schema.js';
+import { repoSlug } from './repo.js';
+import { getRepoGitStatus, listRepoBranches, checkoutRepoBranch } from './git.js';
 
 export interface MenuContext {
   runDockerCompose: (args: string[], mode?: string) => number;
@@ -170,6 +173,7 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       "🐚  om shell      (Entrar a la consola de un servicio)",
       "🧹  om prune      (Limpieza total: borrar volumes y datos)",
       "📊  om graph      (Generar diagrama Mermaid del stack)",
+      "🌿  om branches   (Ver ramas activas / cambiar rama)",
       "📥  om sync       (Sincronizar repositorios Git)",
       "⚙️   om gen        (Regenerar compose/nginx/scripts)",
       "🔍  om validate   (Validar stack.yaml)",
@@ -353,27 +357,118 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       console.log(`  \x1b[32m💡 Copia el texto anterior y pégalo en un visor de Mermaid o en tu archivo Markdown.\x1b[0m`);
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 9) { // om sync
+    } else if (mainChoice === 9) { // om branches
+      console.clear();
+      console.log(`\n  \x1b[1m\x1b[35mom\x1b[0m \x1b[1m— Estado de Ramas Git\x1b[0m`);
+      console.log(`  \x1b[2m════════════════════════════════════════════════════════════════════════════════\x1b[0m`);
+
+      const reposDir = join(loaded.workspaceRoot, 'repos');
+      const serviceNamesWithRepo = serviceNames.filter((name) => hasRepo(stack.services[name]!));
+
+      let hasCloned = false;
+      const formattedLines: string[] = [];
+      const clonedServices: string[] = [];
+
+      for (const name of serviceNamesWithRepo) {
+        const svc = stack.services[name]!;
+        if (!hasRepo(svc)) continue;
+        const slug = repoSlug(svc.repo);
+        const targetDir = join(reposDir, slug);
+        const status = getRepoGitStatus(targetDir);
+
+        if (status) {
+          hasCloned = true;
+          clonedServices.push(name);
+          const authorStr = status.author.slice(0, 15);
+          const commitInfo = `[${authorStr}, ${status.date}]`;
+          const subjectStr = status.subject.slice(0, 35);
+          formattedLines.push(
+            `  \x1b[32m✓\x1b[0m \x1b[1m${name.padEnd(25)}\x1b[0m \x1b[36m${status.branch.padEnd(25)}\x1b[0m \x1b[2m${commitInfo.padEnd(30)} ${subjectStr}\x1b[0m`
+          );
+        } else {
+          formattedLines.push(`  \x1b[33m⚠\x1b[0m ${name.padEnd(25)} \x1b[2m(no clonado)\x1b[0m`);
+        }
+      }
+
+      for (const line of formattedLines) {
+        console.log(line);
+      }
+      console.log(`  \x1b[2m════════════════════════════════════════════════════════════════════════════════\x1b[0m`);
+
+      if (!hasCloned) {
+        console.log('  No hay repositorios clonados. Primero corre om sync.');
+        await pressAnyKeyToContinue();
+        continue;
+      }
+
+      const actionChoice = await selectOption("¿Qué deseas hacer?", [
+        "[Cambiar rama de algún repositorio]",
+        "[Volver al menú principal]"
+      ]);
+
+      if (actionChoice !== 0) continue;
+
+      const svcChoice = await selectOption("Selecciona el servicio a modificar:", [
+        ...clonedServices,
+        "[Cancelar]"
+      ]);
+      if (svcChoice === clonedServices.length) continue;
+
+      const selectedSvc = clonedServices[svcChoice]!;
+      const svc = stack.services[selectedSvc]!;
+      if (!hasRepo(svc)) continue;
+      const selectedSlug = repoSlug(svc.repo);
+      const selectedDir = join(reposDir, selectedSlug);
+
+      const branches = listRepoBranches(selectedDir);
+      if (branches.length === 0) {
+        console.log('\n  No se pudieron obtener ramas de este repositorio.');
+        await pressAnyKeyToContinue();
+        continue;
+      }
+
+      const currentBranch = getRepoGitStatus(selectedDir)?.branch;
+      const branchOptions = branches.map((b) => b === currentBranch ? `* \x1b[32m${b} (actual)\x1b[0m` : `  ${b}`);
+
+      const branchChoice = await selectOption(`Selecciona la rama para repos/${selectedSlug}:`, [
+        ...branchOptions,
+        "[Cancelar]"
+      ]);
+      if (branchChoice === branches.length) continue;
+
+      const targetBranch = branches[branchChoice]!;
+      console.clear();
+      console.log(`\x1b[33mCambiando repos/${selectedSlug} a la rama "${targetBranch}"...\x1b[0m\n`);
+
+      const res = checkoutRepoBranch(selectedDir, targetBranch);
+      if (res.success) {
+        console.log(`\x1b[32m✓ Rama cambiada con éxito.\x1b[0m`);
+      } else {
+        console.error(`\x1b[31m✗ Error al cambiar de rama: ${res.error}\x1b[0m`);
+      }
+      await pressAnyKeyToContinue();
+
+    } else if (mainChoice === 10) { // om sync
       console.clear();
       await runAction(() => context.runSync(activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 10) { // om gen
+    } else if (mainChoice === 11) { // om gen
       console.clear();
       await runAction(() => context.runGen([], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 11) { // om validate
+    } else if (mainChoice === 12) { // om validate
       console.clear();
       await runAction(() => context.runValidate([], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 12) { // om vscode
+    } else if (mainChoice === 13) { // om vscode
       console.clear();
       await runAction(() => context.runVscode(activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 13) { // om doctor
+    } else if (mainChoice === 14) { // om doctor
       console.clear();
       await runAction(() => context.runDoctor(undefined, activeModeStr));
       await pressAnyKeyToContinue();

@@ -16,6 +16,9 @@ import { syncStack, type SyncResult } from './sync.js';
 import { runMenu, selectOption } from './menu.js';
 import { runDoctor } from './doctor.js';
 import { renderMermaid } from './renderer/graph.js';
+import { getRepoGitStatus, checkoutRepoBranch, listRepoBranches } from './git.js';
+import { repoSlug } from './repo.js';
+import { hasRepo } from './schema.js';
 
 const COMMANDS = [
   'init',
@@ -38,6 +41,7 @@ const COMMANDS = [
   'exec',
   'prune',
   'graph',
+  'branches',
   'help',
   'version',
 ] as const;
@@ -110,6 +114,7 @@ ${cmdLine('om vscode',                        'genera .vscode/launch.json (attac
 ${cmdLine('om menu',                          'abre el menú interactivo de consola')}
 ${cmdLine('om doctor',                        'verifica el estado de docker, puertos y repositorios')}
 ${cmdLine('om graph [stack.yaml]',            'genera un diagrama Mermaid de la arquitectura')}
+${cmdLine('om branches [svc] [branch]',       'muestra ramas Git activas o cambia de rama')}
 
 ${bold(green('runtime'))}
 ${cmdLine('om up [service...]',               'docker compose up -d ' + dim('(regenera artefactos antes)'))}
@@ -245,6 +250,8 @@ async function main(argv: string[]): Promise<number> {
         return await runPrune(rest, mode);
       case 'graph':
         return runGraph(rest, mode);
+      case 'branches':
+        return await runBranches(rest, mode);
     }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -584,6 +591,78 @@ function runGraph(args: string[], mode?: string): number {
   const mermaidStr = renderMermaid(loaded.stack);
   process.stdout.write(mermaidStr);
   return 0;
+}
+
+async function runBranches(args: string[], mode?: string): Promise<number> {
+  const loaded = loadStack(undefined, mode);
+  const reposDir = resolve(loaded.workspaceRoot, 'repos');
+
+  if (args.length === 0) {
+    console.log(`\n  ${bold(magenta('om'))} ${dim('—')} ${bold('Ramas Git de los Repositorios')}`);
+    console.log(`  ${dim('────────────────────────────────────────────────────────────────────────────────')}`);
+
+    let hasCloned = false;
+    for (const [name, svc] of Object.entries(loaded.stack.services)) {
+      if (!hasRepo(svc)) continue;
+      const slug = repoSlug(svc.repo);
+      const targetDir = join(reposDir, slug);
+      const status = getRepoGitStatus(targetDir);
+
+      if (status) {
+        hasCloned = true;
+        const authorStr = status.author.slice(0, 15);
+        const commitInfo = `[${authorStr}, ${status.date}]`;
+        const subjectStr = status.subject.slice(0, 30);
+        console.log(
+          `  ${green('✓')} ${name.padEnd(20)} \x1b[36m${status.branch.padEnd(20)}\x1b[0m ${commitInfo.padEnd(30)} ${dim(subjectStr)}`
+        );
+      } else {
+        console.log(`  ${yellow('⚠')} ${name.padEnd(20)} \x1b[2m(no clonado / local)\x1b[0m`);
+      }
+    }
+    if (!hasCloned) {
+      console.log('  No hay repositorios clonados todavía. Ejecuta \'om sync\' primero.');
+    }
+    console.log(`  ${dim('────────────────────────────────────────────────────────────────────────────────')}\n`);
+    return 0;
+  }
+
+  const svc = args[0]!;
+  const branchName = args[1];
+
+  const svcDef = loaded.stack.services[svc];
+  if (!svcDef || !hasRepo(svcDef)) {
+    console.error(`Error: el servicio "${svc}" no existe o no tiene un repositorio asociado.`);
+    return 1;
+  }
+
+  const slug = repoSlug(svcDef.repo);
+  const targetDir = join(reposDir, slug);
+  if (!existsSync(join(targetDir, '.git'))) {
+    console.error(`Error: el repositorio repos/${slug} no está clonado.`);
+    return 1;
+  }
+
+  if (!branchName) {
+    const branches = listRepoBranches(targetDir);
+    console.log(`\nRamas disponibles en ${svc} (repos/${slug}):`);
+    for (const b of branches) {
+      const active = getRepoGitStatus(targetDir)?.branch === b ? `* \x1b[32m${b}\x1b[0m` : `  ${b}`;
+      console.log(`  ${active}`);
+    }
+    console.log('');
+    return 0;
+  }
+
+  console.log(`Cambiando de rama en repos/${slug} a "${branchName}"...`);
+  const checkoutRes = checkoutRepoBranch(targetDir, branchName);
+  if (checkoutRes.success) {
+    console.log(`✓ Cambiado con éxito a "${branchName}"`);
+    return 0;
+  } else {
+    console.error(`✗ Error al cambiar de rama: ${checkoutRes.error}`);
+    return 1;
+  }
 }
 
 main(process.argv.slice(2)).then(code => process.exit(code)).catch(err => {
