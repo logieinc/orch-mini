@@ -15,6 +15,7 @@ import { renderVscodeLaunch } from './renderer/vscode.js';
 import { syncStack, type SyncResult } from './sync.js';
 import { runMenu, selectOption } from './menu.js';
 import { runDoctor } from './doctor.js';
+import { renderMermaid } from './renderer/graph.js';
 
 const COMMANDS = [
   'init',
@@ -36,6 +37,7 @@ const COMMANDS = [
   'shell',
   'exec',
   'prune',
+  'graph',
   'help',
   'version',
 ] as const;
@@ -107,6 +109,7 @@ ${cmdLine('om info',                          'resumen del stack + qué probable
 ${cmdLine('om vscode',                        'genera .vscode/launch.json (attach + browser)')}
 ${cmdLine('om menu',                          'abre el menú interactivo de consola')}
 ${cmdLine('om doctor',                        'verifica el estado de docker, puertos y repositorios')}
+${cmdLine('om graph [stack.yaml]',            'genera un diagrama Mermaid de la arquitectura')}
 
 ${bold(green('runtime'))}
 ${cmdLine('om up [service...]',               'docker compose up -d ' + dim('(regenera artefactos antes)'))}
@@ -240,6 +243,8 @@ async function main(argv: string[]): Promise<number> {
         return runExec(rest, mode);
       case 'prune':
         return await runPrune(rest, mode);
+      case 'graph':
+        return runGraph(rest, mode);
     }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
@@ -552,6 +557,14 @@ function askConfirmation(question: string): Promise<boolean> {
       resolve(val === 's' || val === 'y' || val === 'si');
     });
   });
+}
+
+function runGraph(args: string[], mode?: string): number {
+  const { stackPath } = parseStackArg(args);
+  const loaded = loadStack(stackPath, mode);
+  const mermaidStr = renderMermaid(loaded.stack);
+  process.stdout.write(mermaidStr);
+  return 0;
 }
 
 main(process.argv.slice(2)).then(code => process.exit(code)).catch(err => {
