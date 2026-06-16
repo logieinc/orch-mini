@@ -66,6 +66,12 @@ function attachConfig(
   if (type === 'java') {
     cfg.hostName = 'localhost';
     cfg.port = debugPort;
+  } else if (type === 'python') {
+    cfg.connect = {
+      host: 'localhost',
+      port: debugPort,
+    };
+    cfg.justMyCode = true;
   } else {
     cfg.address = 'localhost';
     cfg.port = debugPort;
@@ -76,9 +82,18 @@ function attachConfig(
 
   // Si el service monta el código del host adentro del container, mapear paths
   // para que VS Code resuelva los source files al filesystem local.
-  if (type !== 'java' && hasRepo(svc) && svc.working_dir) {
-    cfg.localRoot = `\${workspaceFolder}/repos/${repoSlug(svc.repo)}`;
-    cfg.remoteRoot = svc.working_dir;
+  if (hasRepo(svc) && svc.working_dir) {
+    if (type === 'python') {
+      cfg.pathMappings = [
+        {
+          localRoot: `\${workspaceFolder}/repos/${repoSlug(svc.repo)}`,
+          remoteRoot: svc.working_dir,
+        }
+      ];
+    } else if (type !== 'java') {
+      cfg.localRoot = `\${workspaceFolder}/repos/${repoSlug(svc.repo)}`;
+      cfg.remoteRoot = svc.working_dir;
+    }
   }
 
   return cfg;
