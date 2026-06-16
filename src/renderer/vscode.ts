@@ -45,20 +45,38 @@ function attachConfig(
   name: string,
 ): Record<string, unknown> {
   const svc = stack.services[svcName]!;
+  
+  // Detect debugger type
+  let type = svc.vscode?.type;
+  if (!type) {
+    const img = svc.image || '';
+    if (img.includes('maven') || img.includes('openjdk') || img.includes('eclipse-temurin') || img.includes('java')) {
+      type = 'java';
+    } else {
+      type = 'node';
+    }
+  }
+
   const cfg: Record<string, unknown> = {
     name,
-    type: 'node',
+    type,
     request: 'attach',
-    address: 'localhost',
-    port: debugPort,
-    restart: true,
-    timeout: 30000,
-    skipFiles: ['<node_internals>/**'],
   };
+
+  if (type === 'java') {
+    cfg.hostName = 'localhost';
+    cfg.port = debugPort;
+  } else {
+    cfg.address = 'localhost';
+    cfg.port = debugPort;
+    cfg.restart = true;
+    cfg.timeout = 30000;
+    cfg.skipFiles = ['<node_internals>/**'];
+  }
 
   // Si el service monta el código del host adentro del container, mapear paths
   // para que VS Code resuelva los source files al filesystem local.
-  if (hasRepo(svc) && svc.working_dir) {
+  if (type !== 'java' && hasRepo(svc) && svc.working_dir) {
     cfg.localRoot = `\${workspaceFolder}/repos/${repoSlug(svc.repo)}`;
     cfg.remoteRoot = svc.working_dir;
   }

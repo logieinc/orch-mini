@@ -75,6 +75,7 @@ const vscodeBrowserSchema = z.object({
 
 const vscodeServiceSchema = z.object({
   browser: vscodeBrowserSchema.optional(),
+  type: z.string().optional(),
 });
 
 const needSchema = z.union([
