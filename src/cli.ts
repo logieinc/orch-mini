@@ -362,8 +362,47 @@ function generateVscode(loaded: LoadedStack): void {
   const vscodeDir = resolve(loaded.workspaceRoot, '.vscode');
   mkdirSync(vscodeDir, { recursive: true });
   const target = join(vscodeDir, 'launch.json');
-  const content = renderVscodeLaunch(loaded.stack);
-  writeFileSync(target, content);
+  const generatedContent = renderVscodeLaunch(loaded.stack);
+
+  let finalContent = generatedContent;
+
+  if (existsSync(target)) {
+    try {
+      const existing = JSON.parse(readFileSync(target, 'utf8'));
+      const generated = JSON.parse(generatedContent);
+
+      const existingConfigs = existing.configurations || [];
+      const generatedConfigs = generated.configurations || [];
+      const generatedNames = new Set(generatedConfigs.map((c: any) => c.name));
+
+      // Mantener las configs existentes que no sean las generadas por el CLI
+      const customConfigs = existingConfigs.filter((c: any) => {
+        return c && c.name && !generatedNames.has(c.name);
+      });
+
+      generated.configurations = [...generatedConfigs, ...customConfigs];
+
+      // Conservar inputs
+      if (existing.inputs) {
+        generated.inputs = existing.inputs;
+      }
+      
+      // Conservar compounds
+      if (existing.compounds) {
+        const generatedCompounds = generated.compounds || [];
+        const existingCompounds = existing.compounds || [];
+        const generatedCompoundNames = new Set(generatedCompounds.map((c: any) => c.name));
+        const customCompounds = existingCompounds.filter((c: any) => !generatedCompoundNames.has(c.name));
+        generated.compounds = [...generatedCompounds, ...customCompounds];
+      }
+
+      finalContent = JSON.stringify(generated, null, 2) + '\n';
+    } catch (err) {
+      // Ignorar error y usar content limpio si falla el parse
+    }
+  }
+
+  writeFileSync(target, finalContent);
 
   const debugCount = Object.values(loaded.stack.services).filter((s) => s.debug_port).length;
   const browserCount = Object.values(loaded.stack.services).filter((s) => s.vscode?.browser).length;

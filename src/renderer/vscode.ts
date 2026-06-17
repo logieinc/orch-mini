@@ -119,7 +119,18 @@ function browserConfig(
   };
 
   if (hasRepo(svc)) {
-    cfg.webRoot = `\${workspaceFolder}/repos/${repoSlug(svc.repo)}`;
+    const slug = repoSlug(svc.repo);
+    let subPath = '';
+    if (svc.working_dir) {
+      const prefix = `/workspace/${slug}`;
+      if (svc.working_dir.startsWith(prefix)) {
+        subPath = svc.working_dir.slice(prefix.length);
+      }
+    }
+    cfg.webRoot = `\${workspaceFolder}/repos/${slug}${subPath}`;
+    cfg.sourceMapPathOverrides = {
+      'webpack:///*': '${webRoot}/*',
+    };
   }
 
   return cfg;
