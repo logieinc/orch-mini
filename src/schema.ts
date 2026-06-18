@@ -125,6 +125,7 @@ const serviceSchema = z
     needs: z.array(needSchema).optional(),
     healthcheck: healthcheckSchema.optional(),
     expose_host: z.number().int().positive().optional(),
+    extra_ports: z.array(z.string()).optional(),
     volumes: z.array(z.string()).optional(),
     // Lista de directorios que el renderer "shadow-ea" con named volumes para
     // que no atraviesen el bind mount del repo (i.e. cruzar VirtioFS host↔VM

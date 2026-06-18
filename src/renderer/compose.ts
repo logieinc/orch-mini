@@ -4,6 +4,7 @@ import { hasBuild, type Stack, type Service } from '../schema.js';
 import { renderDbInit } from './db-init.js';
 
 const REPOS_DIR_VAR = '${REPOS_DIR}';
+const STACK_DIR_VAR = '${STACK_DIR}';
 
 // Directorios "regenerables" que deben vivir dentro del VM Linux (no cruzar
 // el bind mount al host macOS). node_modules tiene además el problema de los
@@ -33,10 +34,28 @@ export function renderCompose(stack: Stack): string {
     };
 
     if (hasBuild(svc)) {
-      entry.build = {
-        context: `${REPOS_DIR_VAR}/${repoSlug(svc.repo!)}`,
-        dockerfile: svc.build,
-      };
+      const buildStr = svc.build!;
+      if (buildStr.startsWith('./') || buildStr.startsWith('../')) {
+        const cleanPath = buildStr.replace(/\\/g, '/');
+        if (cleanPath.endsWith('/Dockerfile') || cleanPath.endsWith('Dockerfile')) {
+          const lastSlash = cleanPath.lastIndexOf('/');
+          const dir = cleanPath.slice(0, lastSlash);
+          entry.build = {
+            context: `${STACK_DIR_VAR}/../${dir}`,
+            dockerfile: 'Dockerfile',
+          };
+        } else {
+          entry.build = {
+            context: `${STACK_DIR_VAR}/../${cleanPath}`,
+            dockerfile: 'Dockerfile',
+          };
+        }
+      } else {
+        entry.build = {
+          context: `${REPOS_DIR_VAR}/${repoSlug(svc.repo!)}`,
+          dockerfile: buildStr,
+        };
+      }
     } else {
       entry.image = svc.image;
     }
@@ -54,6 +73,9 @@ export function renderCompose(stack: Stack): string {
       ports.push(`${svc.expose_host}:${svc.port}`);
     }
     if (svc.debug_port !== undefined) ports.push(`${svc.debug_port}:${svc.debug_port}`);
+    if (svc.extra_ports !== undefined) {
+      ports.push(...svc.extra_ports);
+    }
     if (ports.length > 0) entry.ports = ports;
 
     const environment: Record<string, string> = { ...(svc.env ?? {}) };
