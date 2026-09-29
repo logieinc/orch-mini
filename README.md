@@ -270,13 +270,41 @@ services:
 | `sync` | clone/pull de los repos declarados en `services.*.repo` |
 | `gen [path] [--out dir]` | rinde `docker-compose.yaml` + `nginx.conf` + scripts en `.stack/` |
 | `validate [path]` | solo valida el schema del stack |
-| `up [args]` | `docker compose up -d` |
+| `info` | resumen del stack: documentos, tareas, services, repos, env a completar |
+| `vscode` | genera `.vscode/launch.json` (attach + browser) |
+| `menu` | menú interactivo de consola |
+| `doctor` | verifica docker, puertos y repos |
+| `graph [path]` | diagrama Mermaid de la arquitectura |
+| `branches [svc] [branch]` | muestra las ramas activas o cambia de rama |
+| `up [args]` | `docker compose up -d` (regenera artefactos antes) |
 | `down [args]` | `docker compose down` (remueve containers) |
 | `stop [args]` | `docker compose stop` (preserva containers) |
-| `restart [svc]` | `docker compose restart` |
+| `restart [svc]` | `docker compose restart` (soft, no recrea) |
+| `recreate [svc]` | `up -d --force-recreate` (aplica cambios de env) |
 | `build [svc]` | `docker compose build` |
 | `logs [svc]` | `docker compose logs -f --tail=200` |
 | `ps` | `docker compose ps` |
+| `shell [svc]` | entra por `sh` a un container |
+| `exec <svc> <cmd>` | ejecuta un comando en un container |
+| `prune [--force]` | detiene y remueve containers, redes y volúmenes |
+
+Además, cada task declarada en `tasks:` del `stack.yaml` se invoca como
+`om <nombre> [args]`, y aparece listada en `om help` y en `om info`.
+
+### `om info` y los documentos del stack
+
+Si al lado del `stack.yaml` hay un `DEUDA.md` o un `DECISIONES.md`, `om info`
+los resume arriba de todo: cuántas entradas tiene cada uno y, si los títulos
+arrancan con un símbolo, cuántas de cada tipo.
+
+```
+Documentos
+  DEUDA.md        19 entradas  2 🔴 · 3 🟠 · 10 🟡 · 1 🚩 · 3 ⏳  om deuda
+  DECISIONES.md    2 entradas                                    om decisiones
+```
+
+No hay vocabulario hardcodeado: se agrupa por el símbolo que encuentre. Si los
+archivos no existen, la sección no aparece.
 
 ## Forma del stack.yaml
 

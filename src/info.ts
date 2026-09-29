@@ -1,4 +1,5 @@
-import { relative } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import type { LoadedStack } from './parser.js';
 import { hasRepo, type Service, type Stack } from './schema.js';
 
@@ -44,6 +45,30 @@ export function renderInfo(loaded: LoadedStack): string {
       gw ? ` · gateway en :${gw.port}` : ''
     } · ${sourceLabel}${C.reset}`,
   );
+
+  const docs = collectStackDocs(loaded);
+  if (docs.length > 0) {
+    out.push('');
+    out.push(section('Documentos'));
+    const maxFile = Math.max(...docs.map((d) => d.file.length));
+    for (const d of docs) {
+      const counts = d.symbols.length > 0
+        ? `  ${C.dim}${d.symbols.map((s) => `${s.count} ${s.symbol}`).join(' · ')}${C.reset}`
+        : '';
+      out.push(
+        `  ${d.file.padEnd(maxFile)}  ${String(d.entries).padStart(3)} entradas${counts}` +
+        `  ${C.dim}om ${d.task}${C.reset}`,
+      );
+    }
+  }
+
+  const taskNames = Object.keys(stack.tasks ?? {});
+  if (taskNames.length > 0) {
+    out.push('');
+    out.push(section('Tareas'));
+    out.push(`  ${taskNames.join(` ${C.dim}·${C.reset} `)}`);
+    out.push(`  ${C.dim}descripciones en 'om help'${C.reset}`);
+  }
 
   out.push('');
   out.push(section('Services'));
@@ -318,4 +343,57 @@ function problemFor(value: string): string | null {
 
 function truncate(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+
+type StackDoc = {
+  file: string;
+  task: string;
+  entries: number;
+  symbols: Array<{ symbol: string; count: number }>;
+};
+
+// Documentos de convención que viven al lado del stack (DEUDA.md,
+// DECISIONES.md). No son parte del schema: si no están, esta sección no sale.
+// Se cuenta un `## ` por entrada y, si el título arranca con un símbolo no
+// ASCII (🔴, ⚠️, …), se agrupa por ese símbolo — sin vocabulario hardcodeado,
+// cada stack usa el suyo.
+const STACK_DOCS: Array<{ file: string; task: string }> = [
+  { file: 'DEUDA.md', task: 'deuda' },
+  { file: 'DECISIONES.md', task: 'decisiones' },
+];
+
+function collectStackDocs(loaded: LoadedStack): StackDoc[] {
+  const out: StackDoc[] = [];
+  for (const { file, task } of STACK_DOCS) {
+    const path = join(loaded.workspaceRoot, file);
+    if (!existsSync(path)) continue;
+    let text: string;
+    try {
+      text = readFileSync(path, 'utf8');
+    } catch {
+      continue;
+    }
+    const headings = text
+      .split('\n')
+      .filter((l) => l.startsWith('## '))
+      .map((l) => l.slice(3).trim());
+    if (headings.length === 0) continue;
+
+    const bySymbol = new Map<string, number>();
+    for (const h of headings) {
+      const first = h.split(/\s+/)[0] ?? '';
+      // Un símbolo es un token corto sin letras ni dígitos ASCII.
+      if (first.length <= 3 && !/[A-Za-z0-9]/.test(first) && /[^\x00-\x7F]/.test(first)) {
+        bySymbol.set(first, (bySymbol.get(first) ?? 0) + 1);
+      }
+    }
+    out.push({
+      file,
+      task: (loaded.stack.tasks ?? {})[task] ? task : `— (sin task '${task}')`,
+      entries: headings.length,
+      symbols: [...bySymbol].map(([symbol, count]) => ({ symbol, count })),
+    });
+  }
+  return out;
 }
