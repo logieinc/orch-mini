@@ -10,6 +10,8 @@ import { getRepoGitStatus, listRepoBranches, checkoutRepoBranch } from './git.js
 
 export interface MenuContext {
   runDockerCompose: (args: string[], mode?: string) => number;
+  runTask: (name: string, args: string[], mode?: string) => number;
+  runInfo: (mode?: string) => number;
   runSync: (mode?: string) => number;
   runValidate: (args: string[], mode?: string) => number;
   runGen: (args: string[], mode?: string) => number;
@@ -163,40 +165,45 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
     console.log(`  \x1b[1mPath:\x1b[0m   \x1b[2m${loaded.workspaceRoot}\x1b[0m`);
     console.log(`  \x1b[2m────────────────────────────────────────\x1b[0m`);
 
-    const menuOptions = [
-      "▶   om up         (Levantar todo o servicios)",
-      "⏹   om down       (Detener/remover todo o servicios)",
-      "🔄  om restart    (Reiniciar todo o servicios)",
-      "🚀  om recreate   (Forzar recreación/recargar env)",
-      "🛠   om build      (Construir imágenes)",
-      "📋  om logs       (Ver logs de servicios)",
-      "🐚  om shell      (Entrar a la consola de un servicio)",
-      "🧹  om prune      (Limpieza total: borrar volumes y datos)",
-      "📊  om graph      (Generar diagrama Mermaid del stack)",
-      "🌿  om branches   (Ver ramas activas / cambiar rama)",
-      "📥  om sync       (Sincronizar repositorios Git)",
-      "⚙️   om gen        (Regenerar compose/nginx/scripts)",
-      "🔍  om validate   (Validar stack.yaml)",
-      "💻  om vscode     (Generar config VS Code)",
-      "🩺  om doctor     (Diagnóstico del entorno)",
+    // Cada opción lleva su `key`: el dispatch de abajo va por clave, no por
+    // índice. Agregar una opción en el medio no renumera nada.
+    const taskCount = Object.keys(stack.tasks ?? {}).length;
+    const menuOptions: Array<{ key: string; label: string }> = [
+      { key: 'up',        label: "▶   om up         (Levantar todo o servicios)" },
+      { key: 'down',      label: "⏹   om down       (Detener/remover todo o servicios)" },
+      { key: 'stop',      label: "⏸   om stop       (Parar sin remover los containers)" },
+      { key: 'restart',   label: "🔄  om restart    (Reiniciar todo o servicios)" },
+      { key: 'recreate',  label: "🚀  om recreate   (Forzar recreación/recargar env)" },
+      { key: 'build',     label: "🛠   om build      (Construir imágenes)" },
+      { key: 'logs',      label: "📋  om logs       (Ver logs de servicios)" },
+      { key: 'shell',     label: "🐚  om shell      (Entrar a la consola de un servicio)" },
+      { key: 'tasks',     label: `🧩  Tareas        (las ${taskCount} declaradas en el stack.yaml)` },
+      { key: 'prune',     label: "🧹  om prune      (Limpieza total: borrar volumes y datos)" },
+      { key: 'info',      label: "📄  om info       (Resumen: documentos, tareas, services, env)" },
+      { key: 'graph',     label: "📊  om graph      (Generar diagrama Mermaid del stack)" },
+      { key: 'branches',  label: "🌿  om branches   (Ver ramas activas / cambiar rama)" },
+      { key: 'sync',      label: "📥  om sync       (Sincronizar repositorios Git)" },
+      { key: 'gen',       label: "⚙️   om gen        (Regenerar compose/nginx/scripts)" },
+      { key: 'validate',  label: "🔍  om validate   (Validar stack.yaml)" },
+      { key: 'vscode',    label: "💻  om vscode     (Generar config VS Code)" },
+      { key: 'doctor',    label: "🩺  om doctor     (Diagnóstico del entorno)" },
     ];
 
     const hasModes = loaded.declaredModes && loaded.declaredModes.length > 1;
     if (hasModes) {
-      menuOptions.push(`⚙️   Cambiar mode (actual: ${loaded.activeMode})`);
+      menuOptions.push({ key: 'mode', label: `⚙️   Cambiar mode (actual: ${loaded.activeMode})` });
     }
-    menuOptions.push("🚪  Salir");
+    menuOptions.push({ key: 'exit', label: "🚪  Salir" });
 
-    const mainChoice = await selectOption("Selecciona una acción:", menuOptions);
+    const mainChoice = await selectOption("Selecciona una acción:", menuOptions.map((o) => o.label));
+    const key = menuOptions[mainChoice]?.key ?? 'exit';
 
-    // Salir es siempre la última opción
-    if (mainChoice === menuOptions.length - 1) {
+    if (key === 'exit') {
       console.clear();
       break;
     }
 
-    // Cambiar mode es la penúltima opción si hay modes
-    if (hasModes && mainChoice === menuOptions.length - 2) {
+    if (key === 'mode') {
       const modeChoice = await selectOption("Selecciona el mode:", [
         ...loaded.declaredModes!,
         "[Volver al menú principal]"
@@ -225,7 +232,7 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       });
     };
 
-    if (mainChoice === 0) { // om up
+    if (key === 'up') { // om up
       const serviceOptions = getDecoratedServices();
       const svcChoice = await selectOption("Levantar (om up):", [
         "[Todo el stack]",
@@ -239,7 +246,7 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       await runAction(() => context.runDockerCompose(['up', '-d', ...args], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 1) { // om down
+    } else if (key === 'down') { // om down
       const serviceOptions = getDecoratedServices();
       const svcChoice = await selectOption("Detener/remover (om down):", [
         "[Todo el stack]",
@@ -256,7 +263,57 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       }
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 2) { // om restart
+    } else if (key === 'stop') { // om stop
+      const serviceOptions = getDecoratedServices();
+      const svcChoice = await selectOption("Parar sin remover (om stop):", [
+        "[Todo el stack]",
+        ...serviceOptions,
+        "[Volver al menú principal]"
+      ]);
+      if (svcChoice === serviceNames.length + 1) continue;
+
+      console.clear();
+      if (svcChoice === 0) {
+        await runAction(() => context.runDockerCompose(['stop'], activeModeStr));
+      } else {
+        await runAction(() => context.runDockerCompose(['stop', serviceNames[svcChoice - 1]!], activeModeStr));
+      }
+      await pressAnyKeyToContinue();
+
+    } else if (key === 'tasks') { // tasks declaradas en el stack.yaml
+      const taskEntries = Object.entries(stack.tasks ?? {});
+      if (taskEntries.length === 0) {
+        console.clear();
+        console.log(`\n  \x1b[2mEl stack '${stack.name}' no declara \x1b[0mtasks:\x1b[2m en su stack.yaml.\x1b[0m\n`);
+        await pressAnyKeyToContinue();
+        continue;
+      }
+      // La descripción va al lado del nombre, recortada al ancho de la
+      // terminal — las de metro/gli19 son largas y romperían el render.
+      const nameWidth = Math.max(...taskEntries.map(([n]) => n.length));
+      // `columns` puede venir 0 (sin tty real), no solo undefined.
+      const room = Math.max(20, (process.stdout.columns || 100) - nameWidth - 12);
+      const taskOptions = taskEntries.map(([name, t]) => {
+        const desc = t.description.length > room ? t.description.slice(0, room - 1) + '…' : t.description;
+        return `${name.padEnd(nameWidth)}  \x1b[2m${desc}\x1b[0m`;
+      });
+      const taskChoice = await selectOption("Tareas del stack:", [
+        ...taskOptions,
+        "[Volver al menú principal]"
+      ]);
+      if (taskChoice >= taskEntries.length) continue;
+
+      console.clear();
+      const taskName = taskEntries[taskChoice]![0];
+      await runAction(() => context.runTask(taskName, [], activeModeStr));
+      await pressAnyKeyToContinue();
+
+    } else if (key === 'info') { // om info
+      console.clear();
+      await runAction(() => context.runInfo(activeModeStr));
+      await pressAnyKeyToContinue();
+
+    } else if (key === 'restart') { // om restart
       const serviceOptions = getDecoratedServices();
       const svcChoice = await selectOption("Reiniciar (om restart):", [
         "[Todo el stack]",
@@ -270,7 +327,7 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       await runAction(() => context.runDockerCompose(['restart', ...args], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 3) { // om recreate
+    } else if (key === 'recreate') { // om recreate
       const serviceOptions = getDecoratedServices();
       const svcChoice = await selectOption("Forzar recreación (om recreate):", [
         "[Todo el stack]",
@@ -284,7 +341,7 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       await runAction(() => context.runDockerCompose(['up', '-d', '--force-recreate', ...args], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 4) { // om build
+    } else if (key === 'build') { // om build
       const serviceOptions = getDecoratedServices();
       const svcChoice = await selectOption("Construir imágenes (om build):", [
         "[Todo el stack]",
@@ -298,7 +355,7 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       await runAction(() => context.runDockerCompose(['build', ...args], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 5) { // om logs
+    } else if (key === 'logs') { // om logs
       const serviceOptions = getDecoratedServices();
       const svcChoice = await selectOption("Ver logs (om logs):", [
         "[Todo el stack]",
@@ -313,7 +370,7 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       await runAction(() => context.runDockerCompose(['logs', '-f', '--tail=200', ...args], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 6) { // om shell
+    } else if (key === 'shell') { // om shell
       if (serviceNames.length === 0) {
         console.error('El stack no tiene servicios definidos.');
         await pressAnyKeyToContinue();
@@ -331,7 +388,7 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       await runAction(() => context.runDockerCompose(['exec', serviceNames[svcChoice]!, 'sh'], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 7) { // om prune
+    } else if (key === 'prune') { // om prune
       const confirmChoice = await selectOption(
         "¡ADVERTENCIA! Se borrarán todos los datos y bases de datos locales. ¿Continuar?",
         [
@@ -347,7 +404,7 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       await runAction(() => context.runDockerCompose(['down', '-v', '--remove-orphans'], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 8) { // om graph
+    } else if (key === 'graph') { // om graph
       console.clear();
       console.log(`\n  \x1b[1m\x1b[35mom\x1b[0m \x1b[1m— Diagrama de Arquitectura (Mermaid)\x1b[0m`);
       console.log(`  \x1b[2m════════════════════════════════════════\x1b[0m`);
@@ -357,7 +414,7 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       console.log(`  \x1b[32m💡 Copia el texto anterior y pégalo en un visor de Mermaid o en tu archivo Markdown.\x1b[0m`);
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 9) { // om branches
+    } else if (key === 'branches') { // om branches
       console.clear();
       console.log(`\n  \x1b[1m\x1b[35mom\x1b[0m \x1b[1m— Estado de Ramas Git\x1b[0m`);
       console.log(`  \x1b[2m════════════════════════════════════════════════════════════════════════════════\x1b[0m`);
@@ -448,27 +505,27 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       }
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 10) { // om sync
+    } else if (key === 'sync') { // om sync
       console.clear();
       await runAction(() => context.runSync(activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 11) { // om gen
+    } else if (key === 'gen') { // om gen
       console.clear();
       await runAction(() => context.runGen([], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 12) { // om validate
+    } else if (key === 'validate') { // om validate
       console.clear();
       await runAction(() => context.runValidate([], activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 13) { // om vscode
+    } else if (key === 'vscode') { // om vscode
       console.clear();
       await runAction(() => context.runVscode(activeModeStr));
       await pressAnyKeyToContinue();
 
-    } else if (mainChoice === 14) { // om doctor
+    } else if (key === 'doctor') { // om doctor
       console.clear();
       await runAction(() => context.runDoctor(undefined, activeModeStr));
       await pressAnyKeyToContinue();

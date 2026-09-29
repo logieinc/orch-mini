@@ -217,7 +217,19 @@ async function main(argv: string[]): Promise<number> {
       case 'vscode':
         return runVscode(mode);
       case 'menu':
-        return await runMenu({ runDockerCompose, runSync, runValidate, runGen, runVscode, runDoctor }, mode);
+        return await runMenu(
+          {
+            runDockerCompose,
+            runSync,
+            runValidate,
+            runGen,
+            runVscode,
+            runDoctor,
+            runInfo,
+            runTask: (name, taskArgs, taskMode) => runTaskOrFail(name, taskArgs, taskMode),
+          },
+          mode,
+        );
       case 'doctor': {
         const { stackPath } = parseStackArg(rest);
         return await runDoctor(stackPath, mode);
