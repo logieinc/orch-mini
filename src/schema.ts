@@ -119,7 +119,18 @@ const serviceSchema = z
     ref: z.string().optional(),
     working_dir: z.string().optional(),
     port: z.number().int().positive().optional(),
+    // Puerto de debug del lado del HOST. Por defecto om asume que el proceso
+    // no tiene inspector propio: publica host==container e inyecta
+    // NODE_OPTIONS=--inspect para abrirlo. Ver debug_port_container.
     debug_port: z.number().int().positive().optional(),
+    // Puerto de debug del lado del CONTAINER, cuando difiere del host.
+    // Declararlo significa "el proceso abre su propio inspector en este
+    // puerto": om entonces solo publica el mapeo y NO inyecta NODE_OPTIONS.
+    // Necesario cuando el comando ya trae su --inspect (y peor si un
+    // supervisor tipo ts-node-dev --respawn o nest --watch respawnea hijos
+    // que heredan el NODE_OPTIONS y pelean el mismo puerto), o para un jdwp
+    // de JVM que escucha en el 5005 de costumbre.
+    debug_port_container: z.number().int().positive().optional(),
     env: envMapSchema.optional(),
     env_meta: envMetaMapSchema.optional(),
     needs: z.array(needSchema).optional(),
@@ -157,6 +168,13 @@ const serviceSchema = z
         code: z.ZodIssueCode.custom,
         path: ['repo'],
         message: 'build: requiere repo: para resolver el build context',
+      });
+    }
+    if (svc.debug_port_container !== undefined && svc.debug_port === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['debug_port_container'],
+        message: 'debug_port_container: requiere debug_port: (es el puerto host al que mapea)',
       });
     }
     if (svc.kind === 'service' && svc.port === undefined) {
@@ -326,4 +344,26 @@ export function hasBuild(svc: Service): boolean {
 
 export function hasRepo(svc: Service): svc is Service & { repo: string } {
   return typeof svc.repo === 'string' && svc.repo.length > 0;
+}
+
+// Imágenes que corren un JVM — su debugger es jdwp, no el inspector de Node.
+// Usado por el renderer de compose (para no inyectarles NODE_OPTIONS) y por el
+// de vscode (para emitir type: java). Los dos tienen que coincidir.
+export function isJvmImage(image: string | undefined): boolean {
+  if (!image) return false;
+  return /maven|gradle|openjdk|eclipse-temurin|\bjava\b/i.test(image);
+}
+
+// Puerto de debug del lado del container (el host es siempre `debug_port`).
+export function containerDebugPort(svc: Service): number | undefined {
+  if (svc.debug_port === undefined) return undefined;
+  return svc.debug_port_container ?? svc.debug_port;
+}
+
+// ¿El proceso abre su propio inspector/agente de debug? Si es así, om solo
+// publica el puerto y no inyecta nada al environment. Es el caso cuando el
+// dev declaró un `debug_port_container` explícito (el comando ya trae su
+// --inspect) o cuando la imagen es un JVM (el agente jdwp va en el command).
+export function ownsDebugAgent(svc: Service): boolean {
+  return svc.debug_port_container !== undefined || isJvmImage(svc.image);
 }

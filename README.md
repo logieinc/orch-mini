@@ -195,6 +195,61 @@ services:
     ...
 ```
 
+## Debug: `debug_port` y `debug_port_container`
+
+`debug_port` es el puerto **del host** al que te vas a attachear. Por defecto `om`
+asume que el proceso no abre ningún inspector por su cuenta, así que hace dos cosas:
+publica `debug_port:debug_port` e inyecta `NODE_OPTIONS=--inspect=0.0.0.0:<port>`
+para abrirlo.
+
+```yaml
+services:
+  api:
+    image: node:20
+    port: 3000
+    debug_port: 9229        # host 9229 → container 9229, con --inspect inyectado
+```
+
+Eso falla cuando el proceso **ya abre su propio inspector**: o porque el script lo
+trae hardcodeado (`ts-node-dev --inspect=0.0.0.0:9229`, `node --inspect`), o porque
+un supervisor respawnea hijos que heredan el `NODE_OPTIONS` y terminan peleando el
+mismo puerto (`ts-node-dev --respawn`, `nest start --watch`). El síntoma es
+`address already in use` apenas arranca.
+
+Para ese caso declarás **`debug_port_container`**: el puerto adentro del container.
+Declararlo significa "el proceso se ocupa del inspector", así que `om` solo publica
+el mapeo y **no inyecta nada**:
+
+```yaml
+services:
+  api-virtual:
+    image: node:20
+    port: 4000
+    debug_port: 8211            # host
+    debug_port_container: 9229  # container — el que abre `npm run debug`
+    command: sh -c "npm install --quiet && npm run debug"
+```
+
+También sirve para separar el puerto del host del de adentro cuando el de adentro es
+fijo por convención (un `jdwp` en 5005, por ejemplo) pero en el host ya está ocupado
+por otro stack.
+
+**Imágenes JVM**: si la imagen es `maven`, `gradle`, `openjdk`, `eclipse-temurin` o
+`java`, `om` nunca inyecta `NODE_OPTIONS` (no significa nada para un JVM) y el
+`launch.json` sale con `type: java`. El agente jdwp lo ponés vos en el `command`:
+
+```yaml
+  mep-api:
+    image: maven:3.8.8-eclipse-temurin-8
+    port: 4010
+    debug_port: 8221
+    debug_port_container: 5005
+    command: sh -c "mvn spring-boot:run -Dspring-boot.run.jvmArguments='-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5005'"
+```
+
+En los tres casos `om vscode` (y todo `om up`) genera la config de attach apuntando
+al puerto **del host**.
+
 ## Montar archivos como volúmenes
 
 Para init scripts u otros archivos que el container espera leer del filesystem (ej `/docker-entrypoint-initdb.d/`), usar `${STACK_DIR}` que apunta al dir del `stack.yaml`:

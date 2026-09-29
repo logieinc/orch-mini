@@ -1,6 +1,6 @@
 import { stringify as stringifyYaml } from 'yaml';
 import { repoSlug } from '../repo.js';
-import { hasBuild, type Stack, type Service } from '../schema.js';
+import { containerDebugPort, hasBuild, ownsDebugAgent, type Stack, type Service } from '../schema.js';
 import { renderDbInit } from './db-init.js';
 
 const REPOS_DIR_VAR = '${REPOS_DIR}';
@@ -72,15 +72,23 @@ export function renderCompose(stack: Stack): string {
     if (svc.expose_host !== undefined && svc.port !== undefined) {
       ports.push(`${svc.expose_host}:${svc.port}`);
     }
-    if (svc.debug_port !== undefined) ports.push(`${svc.debug_port}:${svc.debug_port}`);
+    // host:container — iguales salvo que el service declare debug_port_container.
+    if (svc.debug_port !== undefined) {
+      ports.push(`${svc.debug_port}:${containerDebugPort(svc)}`);
+    }
     if (svc.extra_ports !== undefined) {
       ports.push(...svc.extra_ports);
     }
     if (ports.length > 0) entry.ports = ports;
 
     const environment: Record<string, string> = { ...(svc.env ?? {}) };
-    if (svc.debug_port !== undefined) {
-      const inspectFlag = `--inspect=0.0.0.0:${svc.debug_port}`;
+    // Inyectar el inspector de Node SOLO si el proceso no abre el suyo. Un
+    // service que declara debug_port_container, o que corre sobre un JVM, ya
+    // se ocupa (--inspect propio en el command, o el agente jdwp): meterle un
+    // NODE_OPTIONS ahí es, en el mejor caso, una env var muerta y, en el peor,
+    // dos procesos peleando el mismo puerto cuando el runner respawnea hijos.
+    if (svc.debug_port !== undefined && !ownsDebugAgent(svc)) {
+      const inspectFlag = `--inspect=0.0.0.0:${containerDebugPort(svc)}`;
       environment.NODE_OPTIONS = environment.NODE_OPTIONS
         ? `${environment.NODE_OPTIONS} ${inspectFlag}`
         : inspectFlag;

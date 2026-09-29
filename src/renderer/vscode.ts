@@ -1,9 +1,15 @@
 import { repoSlug } from '../repo.js';
-import { hasRepo, type Stack } from '../schema.js';
+import { hasRepo, isJvmImage, type Stack } from '../schema.js';
 
-// Genera el contenido de .vscode/launch.json para attach al inspector Node
-// de cada service con debug_port + launch del browser para services con
+// Mismo placeholder que usa el renderer de compose en los binds del repo.
+const REPOS_DIR_VAR = '${REPOS_DIR}';
+
+// Genera el contenido de .vscode/launch.json para attach al debugger de cada
+// service con debug_port + launch del browser para services con
 // vscode.browser. Incluye una compound config para attach a todos a la vez.
+//
+// El attach siempre apunta al puerto HOST (`debug_port`), que es el publicado;
+// `debug_port_container` solo existe del lado de adentro del container.
 export function renderVscodeLaunch(stack: Stack): string {
   const configurations: Array<Record<string, unknown>> = [];
   const compounds: Array<Record<string, unknown>> = [];
@@ -45,17 +51,9 @@ function attachConfig(
   name: string,
 ): Record<string, unknown> {
   const svc = stack.services[svcName]!;
-  
-  // Detect debugger type
-  let type = svc.vscode?.type;
-  if (!type) {
-    const img = svc.image || '';
-    if (img.includes('maven') || img.includes('openjdk') || img.includes('eclipse-temurin') || img.includes('java')) {
-      type = 'java';
-    } else {
-      type = 'node';
-    }
-  }
+
+  // Mismo criterio que usa el renderer de compose para no inyectar NODE_OPTIONS.
+  const type = svc.vscode?.type ?? (isJvmImage(svc.image) ? 'java' : 'node');
 
   const cfg: Record<string, unknown> = {
     name,
@@ -83,20 +81,33 @@ function attachConfig(
   // Si el service monta el código del host adentro del container, mapear paths
   // para que VS Code resuelva los source files al filesystem local.
   if (hasRepo(svc) && svc.working_dir) {
+    const slug = repoSlug(svc.repo);
+    const localRoot = `\${workspaceFolder}/repos/${slug}`;
+    // El remoteRoot correcto es donde está montado el REPO, que no siempre es
+    // el working_dir: en un monorepo el bind va a /app y el working_dir baja a
+    // /app/<package>. Si se usara el working_dir, VS Code resolvería cada
+    // archivo un nivel adentro y no matchearía ningún breakpoint.
+    const remoteRoot = repoMountTarget(svc, slug) ?? svc.working_dir;
     if (type === 'python') {
-      cfg.pathMappings = [
-        {
-          localRoot: `\${workspaceFolder}/repos/${repoSlug(svc.repo)}`,
-          remoteRoot: svc.working_dir,
-        }
-      ];
+      cfg.pathMappings = [{ localRoot, remoteRoot }];
     } else if (type !== 'java') {
-      cfg.localRoot = `\${workspaceFolder}/repos/${repoSlug(svc.repo)}`;
-      cfg.remoteRoot = svc.working_dir;
+      cfg.localRoot = localRoot;
+      cfg.remoteRoot = remoteRoot;
     }
   }
 
   return cfg;
+}
+
+// Busca el bind mount del repo (`REPOS_DIR/<slug>:<target>`) y devuelve su
+// target adentro del container. undefined si el service no lo declara.
+function repoMountTarget(svc: Stack['services'][string], slug: string): string | undefined {
+  for (const spec of svc.volumes ?? []) {
+    const parts = spec.split(':');
+    if (parts.length < 2) continue;
+    if (parts[0] === `${REPOS_DIR_VAR}/${slug}`) return parts[1];
+  }
+  return undefined;
 }
 
 function browserConfig(
