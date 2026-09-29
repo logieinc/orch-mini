@@ -1,11 +1,12 @@
 import { spawnSync } from 'node:child_process';
 import readline from 'node:readline';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { initStack } from './init.js';
 import { renderInfo } from './info.js';
 import { loadStack, type LoadedStack } from './parser.js';
+import { STACK_FILENAME } from './discover.js';
 import { renderCompose } from './renderer/compose.js';
 import { renderDbInit } from './renderer/db-init.js';
 import { renderEnv } from './renderer/env.js';
@@ -503,8 +504,21 @@ function runTaskOrFail(cmd: string, args: string[], mode?: string): number {
   try {
     loaded = loadStack(undefined, mode);
   } catch {
-    console.error(`comando desconocido: ${cmd}\n`);
-    printUsage(mode);
+    // Sin stack acá, `cmd` puede ser perfectamente una task válida de OTRO
+    // directorio: el caso típico es correr `om deuda` parado en la raíz del
+    // catálogo en vez de adentro del stack. Decirlo, en vez de volcar el
+    // usage entero, que hace parecer que el comando no existe.
+    console.error(`no encontré un ${STACK_FILENAME} desde ${process.cwd()}`);
+    console.error(
+      `'${cmd}' no es un comando de om; puede ser una task declarada en el stack.yaml de un stack.`,
+    );
+    const nearby = findNearbyStacks(process.cwd(), cmd);
+    if (nearby.length > 0) {
+      console.error(`\nstacks acá abajo que declaran la task '${cmd}':`);
+      for (const dir of nearby) console.error(`  cd ${dir} && om ${cmd}`);
+    } else {
+      console.error(`\nEntrá al directorio del stack y volvé a correrlo, o 'om help' para la lista.`);
+    }
     return 1;
   }
 
@@ -708,3 +722,33 @@ main(process.argv.slice(2)).then(code => process.exit(code)).catch(err => {
   console.error(err);
   process.exit(1);
 });
+
+
+// Busca un nivel hacia abajo stacks que declaren `task`. Sirve para el caso de
+// correr una task parado en la raíz del catálogo: en vez de decir solo "no hay
+// stack", se ofrece el `cd` exacto.
+function findNearbyStacks(from: string, task: string): string[] {
+  const hits: string[] = [];
+  let entries: string[];
+  try {
+    entries = readdirSync(from);
+  } catch {
+    return hits;
+  }
+  for (const name of entries) {
+    if (name.startsWith('.')) continue;
+    for (const sub of ['arch/stack.yaml', 'stack.yaml']) {
+      const candidate = join(from, name, sub);
+      if (!existsSync(candidate)) continue;
+      try {
+        if (new RegExp(`^\\s{2}${task}:`, 'm').test(readFileSync(candidate, 'utf8'))) {
+          hits.push(name);
+        }
+      } catch {
+        /* ignorar */
+      }
+      break;
+    }
+  }
+  return hits;
+}
