@@ -65,7 +65,7 @@ export function renderInfo(loaded: LoadedStack): string {
   const taskNames = Object.keys(stack.tasks ?? {});
   if (taskNames.length > 0) {
     out.push('');
-    out.push(section('Tareas'));
+    out.push(section('Tasks'));
     out.push(`  ${taskNames.join(` ${C.dim}·${C.reset} `)}`);
     out.push(`  ${C.dim}descripciones en 'om help'${C.reset}`);
   }

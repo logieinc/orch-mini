@@ -167,7 +167,8 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
 
     // Cada opción lleva su `key`: el dispatch de abajo va por clave, no por
     // índice. Agregar una opción en el medio no renumera nada.
-    const taskCount = Object.keys(stack.tasks ?? {}).length;
+    const declaredTasks = stack.tasks ?? {};
+    const taskCount = Object.keys(declaredTasks).length;
     const menuOptions: Array<{ key: string; label: string }> = [
       { key: 'up',        label: "▶   om up         (Levantar todo o servicios)" },
       { key: 'down',      label: "⏹   om down       (Detener/remover todo o servicios)" },
@@ -177,9 +178,22 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       { key: 'build',     label: "🛠   om build      (Construir imágenes)" },
       { key: 'logs',      label: "📋  om logs       (Ver logs de servicios)" },
       { key: 'shell',     label: "🐚  om shell      (Entrar a la consola de un servicio)" },
-      { key: 'tasks',     label: `🧩  Tareas        (las ${taskCount} declaradas en el stack.yaml)` },
+    ];
+
+    // Accesos directos a los documentos del stack, cuando el stack.yaml declara
+    // esas tasks. Siguen estando en el submenú `tasks` — esto es un atajo, no
+    // un lugar distinto.
+    if (declaredTasks['deuda']) {
+      menuOptions.push({ key: 'task:deuda', label: "📕  om deuda      (Lo que el stack arrastra hoy)" });
+    }
+    if (declaredTasks['decisiones']) {
+      menuOptions.push({ key: 'task:decisiones', label: "📘  om decisiones (El criterio ya tomado, y por qué)" });
+    }
+
+    menuOptions.push(
+      { key: 'tasks',     label: `🧩  tasks         (las ${taskCount} declaradas en el stack.yaml)` },
       { key: 'prune',     label: "🧹  om prune      (Limpieza total: borrar volumes y datos)" },
-      { key: 'info',      label: "📄  om info       (Resumen: documentos, tareas, services, env)" },
+      { key: 'info',      label: "📄  om info       (Resumen: documentos, tasks, services, env)" },
       { key: 'graph',     label: "📊  om graph      (Generar diagrama Mermaid del stack)" },
       { key: 'branches',  label: "🌿  om branches   (Ver ramas activas / cambiar rama)" },
       { key: 'sync',      label: "📥  om sync       (Sincronizar repositorios Git)" },
@@ -187,7 +201,7 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       { key: 'validate',  label: "🔍  om validate   (Validar stack.yaml)" },
       { key: 'vscode',    label: "💻  om vscode     (Generar config VS Code)" },
       { key: 'doctor',    label: "🩺  om doctor     (Diagnóstico del entorno)" },
-    ];
+    );
 
     const hasModes = loaded.declaredModes && loaded.declaredModes.length > 1;
     if (hasModes) {
@@ -280,6 +294,11 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
       }
       await pressAnyKeyToContinue();
 
+    } else if (key.startsWith('task:')) { // atajo directo a una task
+      console.clear();
+      await runAction(() => context.runTask(key.slice('task:'.length), [], activeModeStr));
+      await pressAnyKeyToContinue();
+
     } else if (key === 'tasks') { // tasks declaradas en el stack.yaml
       const taskEntries = Object.entries(stack.tasks ?? {});
       if (taskEntries.length === 0) {
@@ -297,7 +316,7 @@ export async function runMenu(context: MenuContext, mode?: string): Promise<numb
         const desc = t.description.length > room ? t.description.slice(0, room - 1) + '…' : t.description;
         return `${name.padEnd(nameWidth)}  \x1b[2m${desc}\x1b[0m`;
       });
-      const taskChoice = await selectOption("Tareas del stack:", [
+      const taskChoice = await selectOption("tasks del stack:", [
         ...taskOptions,
         "[Volver al menú principal]"
       ]);
