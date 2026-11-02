@@ -71,6 +71,8 @@ const gatewaySchema = z.object({
 const vscodeBrowserSchema = z.object({
   url: z.string().optional(),
   label: z.string().optional(),
+  // Tamano de la ventana de Chrome, "ANCHOxALTO" (ej. "430x932" para una app de celular).
+  window: z.string().regex(/^\d+x\d+$/, 'window va como ANCHOxALTO, ej. 430x932').optional(),
 });
 
 const vscodeServiceSchema = z.object({

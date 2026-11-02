@@ -123,11 +123,17 @@ function browserConfig(
 
   const cfg: Record<string, unknown> = {
     name: `[${stack.name}] ${label}`,
-    type: 'pwa-chrome',
+    // `chrome` (js-debug): `pwa-chrome` era el nombre de cuando js-debug era opcional y VS Code ya
+    // lo marca como viejo.
+    type: 'chrome',
     request: 'launch',
     url,
     sourceMaps: true,
   };
+  if (browser.window) {
+    const [ancho, alto] = browser.window.split('x');
+    cfg.runtimeArgs = [`--window-size=${ancho},${alto}`];
+  }
 
   if (hasRepo(svc)) {
     const slug = repoSlug(svc.repo);
