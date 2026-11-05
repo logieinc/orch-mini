@@ -198,6 +198,38 @@ const serviceSchema = z
     }
   });
 
+// Otro stack que tiene que estar arriba antes que este (p.ej. la infra
+// compartida con Postgres, Redis y el emulador de AWS). `om up` lo verifica y,
+// si falta algo, dice qué y cómo arreglarlo; con --with-requires lo levanta.
+const requireSchema = z.object({
+  // Nombre del stack requerido: se busca como carpeta hermana de este
+  // workspace (../<stack>/arch/stack.yaml o ../<stack>/stack.yaml).
+  stack: z.string().min(1),
+  // Carpeta del stack requerido, relativa a este workspace, si no es hermana.
+  path: z.string().min(1).optional(),
+  // Mode del stack requerido, si declara modes y no se quiere su default_mode.
+  mode: modeNameSchema.optional(),
+  // Alias de red: om agrega la red del stack requerido a external_networks
+  // con este alias, para usarla en `extra_networks` de los services.
+  network: z.string().min(1).optional(),
+  // Services del stack requerido que tienen que estar corriendo (y healthy si
+  // declaran healthcheck). Default: todos.
+  services: z.array(serviceNameSchema).optional(),
+  // Algo que el stack requerido tiene que tener además de estar arriba (p.ej.
+  // datos sembrados en un emulador sin persistencia). `check` es un comando de
+  // shell que corre en el workspace del stack requerido y sale 0 si está
+  // listo; `fix` es la task de ese stack que lo deja listo (con sus args).
+  ready: z
+    .object({
+      description: z.string().min(1),
+      check: z.string().min(1),
+      fix: z.string().min(1),
+    })
+    .optional(),
+});
+
+export type Require = z.infer<typeof requireSchema>;
+
 export const stackSchema = z
   .object({
     name: z
@@ -216,6 +248,8 @@ export const stackSchema = z
     // en su `extra_networks`. Útil para hablar con containers de otros stacks
     // (p.ej. localstack viviendo en su propio compose project).
     external_networks: z.record(z.string(), z.string()).optional(),
+    // Stacks que tienen que estar arriba antes que este. Ver requireSchema.
+    requires: z.array(requireSchema).optional(),
     gateway: gatewaySchema.optional(),
     // Variables de plantilla para el stack. Se escriben al .env (al lado de
     // REPOS_DIR, STACK_DIR) y docker compose las interpola en cualquier ${VAR}
@@ -322,7 +356,21 @@ export const stackSchema = z
       }
     }
 
-    // extra_networks de cada service deben estar declaradas en external_networks.
+    // Un stack requerido una sola vez.
+    const requiredStacks = new Set<string>();
+    for (const [i, req] of (stack.requires ?? []).entries()) {
+      if (requiredStacks.has(req.stack)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['requires', i, 'stack'],
+          message: `el stack '${req.stack}' aparece dos veces en requires`,
+        });
+      }
+      requiredStacks.add(req.stack);
+    }
+
+    // extra_networks de cada service deben estar declaradas en external_networks
+    // (las de requires.network ya las agregó el parser).
     const externals = new Set(Object.keys(stack.external_networks ?? {}));
     for (const [svcName, svc] of Object.entries(stack.services)) {
       for (const [i, net] of (svc.extra_networks ?? []).entries()) {

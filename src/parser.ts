@@ -4,6 +4,7 @@ import { isMap, isPair, isScalar, LineCounter, parseDocument } from 'yaml';
 import { z } from 'zod';
 import { expandFileRefs } from './file-refs.js';
 import { findStack, STACK_FILENAME, STACK_SUBDIRS } from './discover.js';
+import { requiredProjectName, requiredStackPath } from './requires.js';
 import { stackSchema, type Stack } from './schema.js';
 
 // Mapa de "service.envKey" → {line, col} del archivo fuente.
@@ -94,7 +95,13 @@ export function loadStack(stackPath?: string, requestedMode?: string): LoadedSta
   // a dos campos planos: env (Record<string,string>) + env_meta (descripciones).
   const normalized = normalizeEnvMetadata(expanded);
 
-  const result = stackSchema.safeParse(normalized);
+  const workspaceRoot = computeWorkspaceRoot(workDir);
+
+  // requires.network: la red del stack requerido entra a external_networks con
+  // ese alias, así los services la usan en extra_networks sin repetir el nombre.
+  const withRequiredNetworks = addRequiredNetworks(normalized, workspaceRoot, absPath);
+
+  const result = stackSchema.safeParse(withRequiredNetworks);
   if (!result.success) {
     throw new Error(formatZodError(result.error, absPath));
   }
@@ -102,8 +109,6 @@ export function loadStack(stackPath?: string, requestedMode?: string): LoadedSta
   // Mergear common_env en cada service.env. Marca env_meta.from_common=true
   // en cada var heredada para que info pueda deduplicar.
   const stack = mergeCommonEnv(result.data);
-
-  const workspaceRoot = computeWorkspaceRoot(workDir);
 
   // outDir mode-aware: si el stack declara modes, cada mode tiene su propia
   // carpeta render `.stack/<mode>/`. Permite tener cloud y local levantados
@@ -203,6 +208,31 @@ function collectLocations(
   }
 
   return locations;
+}
+
+function addRequiredNetworks(doc: unknown, workspaceRoot: string, sourcePath: string): unknown {
+  if (!isPlainObject(doc) || !Array.isArray(doc.requires)) return doc;
+  const externals: Record<string, unknown> = isPlainObject(doc.external_networks)
+    ? { ...doc.external_networks }
+    : {};
+  let added = false;
+  for (const req of doc.requires) {
+    if (!isPlainObject(req) || typeof req.stack !== 'string' || typeof req.network !== 'string') continue;
+    if (req.network in externals) {
+      throw new Error(
+        `stack inválido (${sourcePath}):\n  - requires: la red '${req.network}' de '${req.stack}' ya está en external_networks; ` +
+          `sacala de ahí, la arma requires`,
+      );
+    }
+    const path = requiredStackPath(workspaceRoot, {
+      stack: req.stack,
+      ...(typeof req.path === 'string' ? { path: req.path } : {}),
+    });
+    const { project } = requiredProjectName(path, typeof req.mode === 'string' ? req.mode : undefined);
+    externals[req.network] = `${project}_default`;
+    added = true;
+  }
+  return added ? { ...doc, external_networks: externals } : doc;
 }
 
 function computeWorkspaceRoot(workDir: string): string {

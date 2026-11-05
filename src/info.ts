@@ -46,6 +46,21 @@ export function renderInfo(loaded: LoadedStack): string {
     } · ${sourceLabel}${C.reset}`,
   );
 
+  const requires = stack.requires ?? [];
+  if (requires.length > 0) {
+    out.push('');
+    out.push(section('Necesita'));
+    for (const r of requires) {
+      const extras = [
+        r.network ? `red '${r.network}'` : '',
+        r.services ? `services ${r.services.join(', ')}` : '',
+        r.ready ? r.ready.description : '',
+      ].filter((x) => x.length > 0);
+      out.push(`  ${r.stack}${extras.length > 0 ? `  ${C.dim}${extras.join(' · ')}${C.reset}` : ''}`);
+    }
+    out.push(`  ${C.dim}'om up' lo verifica; 'om up --with-requires' lo levanta${C.reset}`);
+  }
+
   const docs = collectStackDocs(loaded);
   if (docs.length > 0) {
     out.push('');

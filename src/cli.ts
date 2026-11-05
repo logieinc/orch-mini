@@ -20,6 +20,14 @@ import { renderMermaid } from './renderer/graph.js';
 import { getRepoGitStatus, checkoutRepoBranch, listRepoBranches } from './git.js';
 import { repoSlug } from './repo.js';
 import { hasRepo } from './schema.js';
+import {
+  consumersOf,
+  readyCheckPasses,
+  requiredProjectName,
+  requiredStackPath,
+  requiredWorkspace,
+  servicesNotReady,
+} from './requires.js';
 
 const COMMANDS = [
   'init',
@@ -119,7 +127,9 @@ ${cmdLine('om branches [svc] [branch]',       'muestra ramas Git activas o cambi
 
 ${bold(green('runtime'))}
 ${cmdLine('om up [service...]',               'docker compose up -d ' + dim('(regenera artefactos antes)'))}
+${cmdLine('om up --with-requires',            'levanta antes los stacks de ' + dim('requires:') + ' que falten')}
 ${cmdLine('om down [service...]',             'sin args baja todo; con services hace ' + dim('rm -fs'))}
+${cmdLine('om down --force',                  'baja aunque otros stacks lo estén usando')}
 ${cmdLine('om stop [service...]',             'docker compose stop ' + dim('(sin remove)'))}
 ${cmdLine('om restart [service...]',          'docker compose restart ' + dim('(soft, no recrea)'))}
 ${cmdLine('om recreate [service...]',         'up -d --force-recreate ' + dim('(aplica cambios de env)'))}
@@ -477,8 +487,13 @@ function generateArtifacts(loaded: LoadedStack, outDir: string): void {
   );
 }
 
-export function runDockerCompose(dockerArgs: string[], mode?: string): number {
+export function runDockerCompose(dockerArgsIn: string[], mode?: string): number {
   const loaded = loadStack(undefined, mode);
+
+  // Flags propios de om que no van a docker compose.
+  const withRequires = dockerArgsIn.includes('--with-requires');
+  const force = dockerArgsIn.includes('--force');
+  const dockerArgs = dockerArgsIn.filter((a) => a !== '--with-requires' && a !== '--force');
 
   // `up` (incluido `up --force-recreate` de `om recreate`) auto-regenera
   // compose + vscode launch.json antes de levantar. Garantiza que el compose
@@ -486,10 +501,18 @@ export function runDockerCompose(dockerArgs: string[], mode?: string): number {
   // los puertos del mode activo. Los demás subcomandos (down/rm/stop/restart/
   // build/logs/ps) usan lo que esté ya generado.
   if (dockerArgs[0] === 'up') {
+    // Antes de levantar, los stacks de `requires:` tienen que estar listos.
+    const reqStatus = ensureRequires(loaded, withRequires);
+    if (reqStatus !== 0) return reqStatus;
     generateArtifacts(loaded, loaded.outDir);
     generateVscode(loaded);
   } else {
     ensureGenerated(loaded);
+  }
+
+  // Bajar o frenar un stack del que dependen otros los deja sin servicio.
+  if ((dockerArgs[0] === 'down' || dockerArgs[0] === 'stop' || dockerArgs[0] === 'rm') && !force) {
+    if (!confirmNoConsumers(loaded)) return 1;
   }
 
   const composePath = join(loaded.outDir, 'docker-compose.yaml');
@@ -506,6 +529,106 @@ export function runDockerCompose(dockerArgs: string[], mode?: string): number {
     return 1;
   }
   return res.status ?? 1;
+}
+
+// Corre `om <args>` en otro workspace (el de un stack requerido), con la salida
+// a la vista. Usa el mismo om que está corriendo.
+function runOmIn(cwd: string, args: string[]): number {
+  const res = spawnSync(process.execPath, [process.argv[1]!, ...args], { cwd, stdio: 'inherit' });
+  if (res.error) {
+    console.error(`error ejecutando om ${args.join(' ')}: ${res.error.message}`);
+    return 1;
+  }
+  return res.status ?? 1;
+}
+
+function sleepMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Verifica cada stack de `requires:`: que sus services estén corriendo (y
+// healthy) y que pase su `ready.check`. Si algo falta, sin --with-requires dice
+// qué y cómo arreglarlo y devuelve 1; con --with-requires lo arregla (om up del
+// stack requerido, espera a que esté healthy, corre su `ready.fix`).
+function ensureRequires(loaded: LoadedStack, withRequires: boolean): number {
+  for (const req of loaded.stack.requires ?? []) {
+    const path = requiredStackPath(loaded.workspaceRoot, req);
+    const { project, mode } = requiredProjectName(path, req.mode);
+    const ws = requiredWorkspace(path);
+    const wanted = req.services ?? Object.keys(loadStack(path, mode).stack.services);
+    const modeFlag = mode ? ` --mode=${mode}` : '';
+    const cd = `cd ${relative(process.cwd(), ws) || '.'}`;
+    const fixCmd = req.ready ? ` && om ${req.ready.fix}${modeFlag}` : '';
+
+    let missing = servicesNotReady(project, wanted);
+    if (missing.length > 0) {
+      if (!withRequires) {
+        console.error(`${yellow('✗')} ${bold(loaded.stack.name)} necesita el stack ${bold(project)}, y no está listo:`);
+        const pad = Math.max(...missing.map((m) => m.service.length));
+        for (const m of missing) console.error(`    ${m.service.padEnd(pad)}  ${m.problem}`);
+        console.error(`  Levantalo:    ${cyan(`${cd} && om up${modeFlag}${fixCmd}`)}`);
+        console.error(`  o desde acá:  ${cyan('om up --with-requires')}`);
+        return 1;
+      }
+      console.log(`${cyan('→')} ${loaded.stack.name} necesita ${project}: lo levanto`);
+      const code = runOmIn(ws, ['up', ...(mode ? [`--mode=${mode}`] : [])]);
+      if (code !== 0) {
+        console.error(`${yellow('✗')} no pude levantar ${project} (om up salió con ${code})`);
+        return code;
+      }
+      // Esperar a que todo corra y pase sus healthchecks.
+      const deadline = Date.now() + 120_000;
+      while ((missing = servicesNotReady(project, wanted)).length > 0 && Date.now() < deadline) {
+        sleepMs(2000);
+      }
+      if (missing.length > 0) {
+        console.error(`${yellow('✗')} ${project} no quedó listo en 2 minutos:`);
+        for (const m of missing) console.error(`    ${m.service}  ${m.problem}`);
+        console.error(`  Mirá sus logs:  ${cyan(`${cd} && om logs ${missing.map((m) => m.service).join(' ')}`)}`);
+        return 1;
+      }
+    }
+
+    if (req.ready && !readyCheckPasses(req.ready.check, ws)) {
+      if (!withRequires) {
+        console.error(`${yellow('✗')} ${bold(project)} está arriba, pero falta: ${req.ready.description}`);
+        console.error(`  Arreglalo:    ${cyan(`${cd} && om ${req.ready.fix}${modeFlag}`)}`);
+        console.error(`  o desde acá:  ${cyan('om up --with-requires')}`);
+        return 1;
+      }
+      console.log(`${cyan('→')} falta: ${req.ready.description}. Corro 'om ${req.ready.fix}' en ${project}`);
+      const code = runOmIn(ws, [...req.ready.fix.split(/\s+/), ...(mode ? [`--mode=${mode}`] : [])]);
+      if (code !== 0 || !readyCheckPasses(req.ready.check, ws)) {
+        console.error(`${yellow('✗')} después de 'om ${req.ready.fix}' sigue faltando: ${req.ready.description}`);
+        console.error(`  Chequeo que falla (en ${relative(process.cwd(), ws) || '.'}): ${req.ready.check}`);
+        return 1;
+      }
+    }
+
+    console.log(`${green('✓')} ${project} listo${req.ready ? dim(` (${req.ready.description})`) : ''}`);
+  }
+  return 0;
+}
+
+// Si otros stacks tienen containers en la red de este, avisa antes de bajarlo:
+// en una terminal pregunta, en un script exige --force.
+function confirmNoConsumers(loaded: LoadedStack): boolean {
+  const consumers = consumersOf(loaded.stack.name);
+  if (consumers.size === 0) return true;
+  const list = [...consumers].map(([p, n]) => `${p} (${n} container${n === 1 ? '' : 's'})`).join(', ');
+  console.error(`${yellow('⚠')} ${bold(loaded.stack.name)} está en uso por: ${list}`);
+  console.error(`  Si lo bajás, esos stacks pierden lo que usan de acá hasta que lo vuelvas a levantar.`);
+  if (!process.stdin.isTTY) {
+    console.error(`  Para bajarlo igual: ${cyan('--force')}`);
+    return false;
+  }
+  process.stderr.write('  ¿Bajarlo igual? (s/N): ');
+  const answer = spawnSync('sh', ['-c', 'read -r a; echo "$a"'], {
+    stdio: ['inherit', 'pipe', 'inherit'],
+    encoding: 'utf8',
+  });
+  const val = (answer.stdout ?? '').trim().toLowerCase();
+  return val === 's' || val === 'si' || val === 'y';
 }
 
 function runTaskOrFail(cmd: string, args: string[], mode?: string): number {

@@ -262,6 +262,32 @@ services:
       - ${STACK_DIR}/init/init-dbs.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
 ```
 
+## Stacks que necesitan otro stack: `requires:`
+
+Cuando un stack usa servicios de otro (p.ej. una infra compartida con Postgres, Redis y un emulador de AWS), se declara en `requires:`. El stack requerido se busca como carpeta hermana (`../<stack>`), o en `path:`.
+
+```yaml
+requires:
+  by_mode:
+    local:
+      - stack: infra-napa-om
+        network: infra                 # su red entra a external_networks con este alias
+        services: [postgres, redis-metro, localstack]   # default: todos
+        ready:                         # algo más que "estar arriba"
+          description: los recursos de AWS de metro sembrados en Moto
+          check: bash arch/seed/check.sh metro   # corre en el stack requerido; 0 = listo
+          fix: seed metro                        # task del stack requerido que lo arregla
+
+services:
+  api-auth:
+    extra_networks: [infra]
+```
+
+- `om up` (y `om recreate`) verifican antes de levantar que esos services estén corriendo y healthy, y que pase el `check`. Si falta algo, dicen qué y con qué comando arreglarlo, y no levantan nada.
+- `om up --with-requires` lo arregla solo: hace `om up` del stack requerido, espera a que esté healthy y corre su `fix`.
+- `om down` / `om stop` en un stack que otros están usando avisa quiénes; en una terminal pregunta, en un script pide `--force`.
+- `om info` lo muestra en "Necesita".
+
 ## Comandos
 
 | comando | descripción |
