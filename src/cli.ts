@@ -12,7 +12,7 @@ import { renderDbInit } from './renderer/db-init.js';
 import { renderEnv } from './renderer/env.js';
 import { renderNginx } from './renderer/nginx.js';
 import { renderScripts } from './renderer/scripts.js';
-import { renderVscodeLaunch } from './renderer/vscode.js';
+import { renderVscodeLaunch, renderVscodeTasks } from './renderer/vscode.js';
 import { syncStack, type SyncResult } from './sync.js';
 import { runMenu, selectOption } from './menu.js';
 import { runDoctor } from './doctor.js';
@@ -398,9 +398,12 @@ function generateVscode(loaded: LoadedStack): void {
       const generatedConfigs = generated.configurations || [];
       const generatedNames = new Set(generatedConfigs.map((c: any) => c.name));
 
-      // Mantener las configs existentes que no sean las generadas por el CLI
+      // Mantener las configs existentes que no sean las generadas por el CLI.
+      // Las que llevan el prefijo "[stack] " son de om: si ya no salen del
+      // stack.yaml (un service que se sacó), se van.
+      const prefijo = `[${loaded.stack.name}] `;
       const customConfigs = existingConfigs.filter((c: any) => {
-        return c && c.name && !generatedNames.has(c.name);
+        return c && c.name && !generatedNames.has(c.name) && !String(c.name).startsWith(prefijo);
       });
 
       generated.configurations = [...generatedConfigs, ...customConfigs];
@@ -415,7 +418,7 @@ function generateVscode(loaded: LoadedStack): void {
         const generatedCompounds = generated.compounds || [];
         const existingCompounds = existing.compounds || [];
         const generatedCompoundNames = new Set(generatedCompounds.map((c: any) => c.name));
-        const customCompounds = existingCompounds.filter((c: any) => !generatedCompoundNames.has(c.name));
+        const customCompounds = existingCompounds.filter((c: any) => !generatedCompoundNames.has(c.name) && !String(c.name).startsWith(prefijo));
         generated.compounds = [...generatedCompounds, ...customCompounds];
       }
 
@@ -429,9 +432,35 @@ function generateVscode(loaded: LoadedStack): void {
 
   const debugCount = Object.values(loaded.stack.services).filter((s) => s.debug_port).length;
   const browserCount = Object.values(loaded.stack.services).filter((s) => s.vscode?.browser).length;
+  const hostCount = Object.values(loaded.stack.tasks ?? {}).filter((t) => t.vscode).length;
 
   console.log(`✓ generado ${relative(process.cwd(), target)}`);
-  console.log(`  ${debugCount} attach configs · ${browserCount} browser launchers`);
+  console.log(`  ${debugCount} attach configs · ${browserCount} browser launchers` + (hostCount ? ` · ${hostCount} tasks del host` : ''));
+
+  const tasksContent = renderVscodeTasks(loaded.stack);
+  if (tasksContent) {
+    const tasksTarget = join(vscodeDir, 'tasks.json');
+    writeFileSync(tasksTarget, mergeVscodeTasks(tasksTarget, tasksContent, `[${loaded.stack.name}] `));
+    console.log(`✓ generado ${relative(process.cwd(), tasksTarget)}`);
+  }
+}
+
+// Igual que con launch.json: las tasks que no genera om (otro label) se conservan.
+function mergeVscodeTasks(target: string, generatedContent: string, prefijo: string): string {
+  if (!existsSync(target)) return generatedContent;
+  try {
+    const existing = JSON.parse(readFileSync(target, 'utf8'));
+    const generated = JSON.parse(generatedContent);
+    const labels = new Set(generated.tasks.map((t: any) => t.label));
+    const custom = (existing.tasks ?? []).filter((t: any) => t && t.label && !labels.has(t.label) && !String(t.label).startsWith(prefijo));
+    generated.tasks = [...generated.tasks, ...custom];
+    const ids = new Set((generated.inputs ?? []).map((i: any) => i.id));
+    const customInputs = (existing.inputs ?? []).filter((i: any) => i && i.id && !ids.has(i.id));
+    generated.inputs = [...(generated.inputs ?? []), ...customInputs];
+    return JSON.stringify(generated, null, 2) + '\n';
+  } catch {
+    return generatedContent;
+  }
 }
 
 export function runGen(args: string[], mode?: string): number {

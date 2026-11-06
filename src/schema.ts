@@ -25,9 +25,27 @@ const RESERVED_TASK_NAMES = new Set([
   'help', 'version',
 ]);
 
+// Una task puede ser un proceso que corre en el HOST (fuera de docker) y que
+// conviene depurar desde VS Code. Con `vscode:` om genera en .vscode/ una task
+// de VS Code que la corre con `debug_args` y un launch que espera a que el
+// proceso imprima `ready` y se attachea a `debug_port`.
+const taskVscodeSchema = z.object({
+  type: z.enum(['java', 'node']).default('java'),
+  debug_port: z.number().int().positive(),
+  // Se agregan al final de `run` en la versión con debug (ej. "--debug").
+  debug_args: z.string().optional(),
+  // Regex de la línea que avisa que el debugger ya escucha. Por defecto, la
+  // que imprime el agente de cada runtime.
+  ready: z.string().optional(),
+  label: z.string().optional(),
+  // Java: como en services, el proyecto de las clases y fuentes (`projectName`).
+  project: z.string().optional(),
+});
+
 const taskSchema = z.object({
   description: z.string().min(1),
   run: z.string().min(1),
+  vscode: taskVscodeSchema.optional(),
 });
 
 const envValueSchema = z.union([z.string(), z.number(), z.boolean()]).transform(String);
@@ -73,11 +91,19 @@ const vscodeBrowserSchema = z.object({
   label: z.string().optional(),
   // Tamano de la ventana de Chrome, "ANCHOxALTO" (ej. "430x932" para una app de celular).
   window: z.string().regex(/^\d+x\d+$/, 'window va como ANCHOxALTO, ej. 430x932').optional(),
+  // true: antes de abrir el navegador, el launch corre `om up <service>` y
+  // espera a que la url responda (preLaunchTask). Para pantallas que viven en
+  // un container (noVNC, por ejemplo) y que no tiene sentido abrir sin él.
+  up: z.boolean().optional(),
 });
 
 const vscodeServiceSchema = z.object({
   browser: vscodeBrowserSchema.optional(),
   type: z.string().optional(),
+  // Java: proyecto donde el debugger busca clases y fuentes (`projectName`).
+  // Hace falta cuando el workspace tiene otro proyecto con las mismas clases
+  // en otra versión: sin esto, VS Code puede mostrar la fuente equivocada.
+  project: z.string().optional(),
 });
 
 const needSchema = z.union([
@@ -323,6 +349,13 @@ export const stackSchema = z
         const list = hostPorts.get(svc.debug_port) ?? [];
         list.push(`${svcName}.debug_port`);
         hostPorts.set(svc.debug_port, list);
+      }
+    }
+    for (const [taskName, task] of Object.entries(stack.tasks ?? {})) {
+      if (task.vscode) {
+        const list = hostPorts.get(task.vscode.debug_port) ?? [];
+        list.push(`tasks.${taskName}.vscode.debug_port`);
+        hostPorts.set(task.vscode.debug_port, list);
       }
     }
     for (const [port, owners] of hostPorts) {

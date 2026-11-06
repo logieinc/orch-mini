@@ -27,6 +27,30 @@ export function renderVscodeLaunch(stack: Stack): string {
     }
   }
 
+  // Tasks que corren en el host con `vscode:`: launch que primero las arranca
+  // en modo debug (preLaunchTask) y después se attachea. No van en el
+  // "Attach all": lanzan un proceso, no se enganchan a uno que ya corre.
+  for (const [name, task] of Object.entries(stack.tasks ?? {})) {
+    if (!task.vscode) continue;
+    const v = task.vscode;
+    const cfg: Record<string, unknown> = {
+      name: `[${stack.name}] ${v.label ?? name}`,
+      type: v.type,
+      request: 'attach',
+      preLaunchTask: taskDebugLabel(stack, name),
+    };
+    if (v.type === 'java') {
+      cfg.hostName = 'localhost';
+      cfg.port = v.debug_port;
+      if (v.project) cfg.projectName = v.project;
+    } else {
+      cfg.address = 'localhost';
+      cfg.port = v.debug_port;
+      cfg.skipFiles = ['<node_internals>/**'];
+    }
+    configurations.push(cfg);
+  }
+
   if (attachNames.length > 1) {
     compounds.push({
       name: `[${stack.name}] Attach all`,
@@ -64,6 +88,7 @@ function attachConfig(
   if (type === 'java') {
     cfg.hostName = 'localhost';
     cfg.port = debugPort;
+    if (svc.vscode?.project) cfg.projectName = svc.vscode.project;
   } else if (type === 'python') {
     cfg.connect = {
       host: 'localhost',
@@ -117,9 +142,7 @@ function browserConfig(
 ): Record<string, unknown> {
   const browser = svc.vscode!.browser!;
   const label = browser.label ?? `Browser (${svcName})`;
-  const url =
-    browser.url ??
-    (stack.gateway ? `http://localhost:${stack.gateway.port}/` : `http://localhost:${svc.port}/`);
+  const url = browserUrl(stack, svc);
 
   const cfg: Record<string, unknown> = {
     name: `[${stack.name}] ${label}`,
@@ -130,6 +153,7 @@ function browserConfig(
     url,
     sourceMaps: true,
   };
+  if (browser.up) cfg.preLaunchTask = upLabel(stack, svcName);
   if (browser.window) {
     const [ancho, alto] = browser.window.split('x');
     cfg.runtimeArgs = [`--window-size=${ancho},${alto}`];
@@ -151,4 +175,78 @@ function browserConfig(
   }
 
   return cfg;
+}
+
+// Línea que imprime cada runtime cuando su debugger ya acepta conexiones.
+const READY_POR_TIPO: Record<string, string> = {
+  java: 'Listening for transport dt_socket',
+  node: 'Debugger listening on',
+};
+
+export function taskLabel(stack: Stack, taskName: string): string {
+  return `[${stack.name}] ${taskName}`;
+}
+
+export function taskDebugLabel(stack: Stack, taskName: string): string {
+  return `[${stack.name}] ${taskName} (debug)`;
+}
+
+export function upLabel(stack: Stack, svcName: string): string {
+  return `[${stack.name}] om up ${svcName}`;
+}
+
+// Genera .vscode/tasks.json para las tasks del stack que declaran `vscode:`:
+// una que las corre tal cual y otra con `debug_args`, de fondo, que VS Code da
+// por lista cuando aparece la línea `ready` (la usa el preLaunchTask). Corren
+// con cwd en la raíz del stack, igual que `om <task>`. Devuelve null si
+// ninguna task declara `vscode:`.
+export function renderVscodeTasks(stack: Stack): string | null {
+  const tasks: Array<Record<string, unknown>> = [];
+  for (const [name, task] of Object.entries(stack.tasks ?? {})) {
+    if (!task.vscode) continue;
+    const v = task.vscode;
+    const base = {
+      type: 'shell',
+      options: { cwd: '${workspaceFolder}' },
+      presentation: { reveal: 'always', panel: 'dedicated' },
+    };
+    tasks.push({ label: taskLabel(stack, name), detail: task.description, command: task.run, ...base, problemMatcher: [] });
+    tasks.push({
+      label: taskDebugLabel(stack, name),
+      detail: `${task.description} (con debug en localhost:${v.debug_port})`,
+      command: v.debug_args ? `${task.run} ${v.debug_args}` : task.run,
+      ...base,
+      isBackground: true,
+      problemMatcher: {
+        owner: `om-${name}`,
+        pattern: { regexp: '^\\b$' },
+        background: { activeBegins: true, beginsPattern: '.', endsPattern: v.ready ?? READY_POR_TIPO[v.type] },
+      },
+    });
+  }
+  // Launchers de navegador con `up: true`: levantar el service y esperar a
+  // que la url conteste (hasta 2 minutos) antes de abrir el navegador.
+  for (const [name, svc] of Object.entries(stack.services)) {
+    const b = svc.vscode?.browser;
+    if (!b?.up) continue;
+    const url = browserUrl(stack, svc);
+    tasks.push({
+      label: upLabel(stack, name),
+      detail: `om up ${name} y espera a ${url}`,
+      type: 'shell',
+      command: `om up ${name} && i=0; until curl -sf -o /dev/null '${url}'; do i=$((i+1)); [ $i -ge 120 ] && echo 'no responde ${url}' && exit 1; sleep 1; done`,
+      options: { cwd: '${workspaceFolder}' },
+      presentation: { reveal: 'silent', panel: 'shared' },
+      problemMatcher: [],
+    });
+  }
+  if (tasks.length === 0) return null;
+  return JSON.stringify({ version: '2.0.0', tasks }, null, 2) + '\n';
+}
+
+function browserUrl(stack: Stack, svc: Stack['services'][string]): string {
+  return (
+    svc.vscode?.browser?.url ??
+    (stack.gateway ? `http://localhost:${stack.gateway.port}/` : `http://localhost:${svc.port}/`)
+  );
 }

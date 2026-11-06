@@ -250,6 +250,60 @@ por otro stack.
 En los tres casos `om vscode` (y todo `om up`) genera la config de attach apuntando
 al puerto **del host**.
 
+### Launchers de navegador que levantan su service: `vscode.browser.up`
+
+Con `up: true`, el launch del navegador primero corre `om up <service>` y espera
+(hasta 2 minutos) a que la url conteste. Sirve para pantallas que viven en un
+container, como un escritorio por noVNC: F5 levanta todo y abre la pantalla.
+
+```yaml
+services:
+  eclipse:
+    vscode:
+      browser:
+        label: Eclipse
+        url: http://localhost:8761/vnc.html?autoconnect=1
+        up: true
+```
+
+### Procesos que corren en el host: `tasks.<nombre>.vscode`
+
+Una task puede ser un proceso que corre en la máquina, fuera de docker (por
+ejemplo, una app de escritorio Java nativa). Si declara `vscode:`, `om vscode`
+(y todo `om up`) genera además:
+
+- en `.vscode/tasks.json`, la task tal cual (`[stack] nombre`) y una versión
+  con debug (`[stack] nombre (debug)`) que agrega `debug_args` y corre de fondo;
+- en `.vscode/launch.json`, una config que arranca esa versión con debug, espera
+  la línea `ready` y se attachea a `debug_port`. Stop solo desconecta el
+  debugger: el proceso sigue hasta que lo cierres (si el próximo F5 tiene que
+  reemplazarlo, que lo resuelva el propio `run`).
+
+```yaml
+tasks:
+  runtime-mac:
+    description: Runtime nativo en la Mac
+    run: sh arch/runtime-mac.sh
+    vscode:
+      type: java            # java (default) o node
+      debug_port: 8707      # el que abre el proceso con debug_args
+      debug_args: --debug
+      label: Runtime nativo  # opcional, nombre en Run and Debug
+      # ready: "regex"      # opcional; default: la línea del agente jdwp / inspector
+      # project: mi-proyecto # opcional (java): ver abajo
+```
+
+**`project` (java, en tasks y en `services.<svc>.vscode`)** sale como
+`projectName` en el launch: el proyecto donde el debugger busca clases y
+fuentes. Hace falta cuando el workspace tiene otro proyecto con las mismas
+clases en otra versión (por ejemplo, el código fuente actual y los jars que
+realmente corren): sin `project`, VS Code puede mostrar la fuente equivocada y
+los breakpoints caen en otra línea.
+
+El `debug_port` entra en la validación de puertos repetidos. Las tasks y
+configs que agregues a mano en `.vscode/` se conservan; las que llevan el
+prefijo `[stack]` son de om, y si ya no salen del `stack.yaml` se borran.
+
 ## Montar archivos como volúmenes
 
 Para init scripts u otros archivos que el container espera leer del filesystem (ej `/docker-entrypoint-initdb.d/`), usar `${STACK_DIR}` que apunta al dir del `stack.yaml`:
