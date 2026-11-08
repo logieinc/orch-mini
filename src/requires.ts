@@ -8,6 +8,16 @@ import type { Require } from './schema.js';
 // Dependencias entre stacks (`requires:`). Un stack declara qué otro stack
 // tiene que estar arriba antes que él; `om up` lo verifica y explica qué falta.
 
+// El nombre del proyecto de compose cuando el stack tiene modes: el mode va
+// ANTES del sufijo `-om` de la convención (metro-om + local → metro-local-om),
+// así el proyecto (y sus containers/redes/volúmenes) sigue terminando en `-om`
+// como todos los stacks. Un name que no termina en `-om` cae al viejo esquema
+// `name-mode`.
+export function nombreConMode(name: string, mode: string): string {
+  if (name.endsWith('-om')) return `${name.slice(0, -'-om'.length)}-${mode}-om`;
+  return `${name}-${mode}`;
+}
+
 // Dónde vive el stack.yaml del stack requerido. Por defecto es una carpeta
 // hermana del workspace (los stacks de un catálogo viven uno al lado del otro).
 export function requiredStackPath(workspaceRoot: string, req: Pick<Require, 'stack' | 'path'>): string {
@@ -40,7 +50,7 @@ export function requiredProjectName(stackPath: string, mode?: string): { project
       `requires: el stack '${name}' declara modes: [${modes.join(', ')}]; indicá cuál con 'mode:'`,
     );
   }
-  return { project: `${name}-${active}`, mode: active };
+  return { project: nombreConMode(name, active), mode: active };
 }
 
 export type ServiceState = { service: string; problem: string };

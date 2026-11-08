@@ -263,9 +263,10 @@ export const stackSchema = z
       .min(1)
       .regex(/^[a-z][a-z0-9-]*$/, 'name debe ser kebab-case y empezar con letra'),
     // Modes declarados. Si está presente, el dev DEBE pasar --mode=<x> al
-    // generar (o setear default_mode). El parser sufija el `name` final con
-    // el mode (p.ej. name: stage-om + mode: local → stage-om-local) para que
-    // ambos modes puedan coexistir levantados.
+    // generar (o setear default_mode). El parser mete el mode en el `name`
+    // final, antes del sufijo `-om` (p.ej. name: stage-om + mode: local →
+    // stage-local-om), para que ambos modes puedan coexistir levantados y el
+    // proyecto siga terminando en `-om`.
     modes: z.array(modeNameSchema).min(1).optional(),
     default_mode: modeNameSchema.optional(),
     // Redes docker externas a las que algunos services del stack se pueden

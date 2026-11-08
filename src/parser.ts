@@ -4,7 +4,7 @@ import { isMap, isPair, isScalar, LineCounter, parseDocument } from 'yaml';
 import { z } from 'zod';
 import { expandFileRefs } from './file-refs.js';
 import { findStack, STACK_FILENAME, STACK_SUBDIRS } from './discover.js';
-import { requiredProjectName, requiredStackPath } from './requires.js';
+import { nombreConMode, requiredProjectName, requiredStackPath } from './requires.js';
 import { stackSchema, type Stack } from './schema.js';
 
 // Mapa de "service.envKey" → {line, col} del archivo fuente.
@@ -351,9 +351,11 @@ function applyModes(
 
   // Sufijar name con el mode para permitir coexistencia de varios modes del
   // mismo stack levantados al mismo tiempo (containers/networks/volumes
-  // namespacean por compose project name).
+  // namespacean por compose project name). El mode va ANTES del sufijo `-om`
+  // de la convención (p.ej. metro-om + local → metro-local-om), así el nombre
+  // del proyecto sigue terminando en `-om` como todos los stacks.
   if (typeof out.name === 'string') {
-    out.name = `${out.name}-${activeMode}`;
+    out.name = nombreConMode(out.name, activeMode);
   }
 
   // Filtrar services por service.modes y borrar el campo modes del service
