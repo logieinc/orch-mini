@@ -381,6 +381,14 @@ export function runVscode(mode?: string): number {
 }
 
 // Extraído de runVscode para que `up` lo pueda invocar sin re-cargar el stack.
+// Una config, compound o task la generó om si su nombre lleva el prefijo
+// "[<algo>] " (su convención). No depende del nombre actual del stack: así, al
+// renombrarlo o cambiar de mode, las entradas viejas de om se podan en vez de
+// acumularse. Las hechas a mano (sin ese prefijo) se conservan siempre.
+function esConfigDeOm(nombre: string): boolean {
+  return /^\[[^\]]+\]\s/.test(nombre);
+}
+
 function generateVscode(loaded: LoadedStack): void {
   const vscodeDir = resolve(loaded.workspaceRoot, '.vscode');
   mkdirSync(vscodeDir, { recursive: true });
@@ -398,12 +406,13 @@ function generateVscode(loaded: LoadedStack): void {
       const generatedConfigs = generated.configurations || [];
       const generatedNames = new Set(generatedConfigs.map((c: any) => c.name));
 
-      // Mantener las configs existentes que no sean las generadas por el CLI.
-      // Las que llevan el prefijo "[stack] " son de om: si ya no salen del
-      // stack.yaml (un service que se sacó), se van.
-      const prefijo = `[${loaded.stack.name}] `;
+      // Mantener solo las configs hechas a mano. Una config de om lleva el
+      // prefijo "[<algo>] " (su convención para TODAS, de cualquier mode o
+      // nombre viejo del stack), así que se poda aunque el stack se haya
+      // renombrado o cambiado de mode, en vez de quedar acumulada. Las de ahora
+      // ya están en generatedNames.
       const customConfigs = existingConfigs.filter((c: any) => {
-        return c && c.name && !generatedNames.has(c.name) && !String(c.name).startsWith(prefijo);
+        return c && c.name && !generatedNames.has(c.name) && !esConfigDeOm(String(c.name));
       });
 
       generated.configurations = [...generatedConfigs, ...customConfigs];
@@ -418,7 +427,7 @@ function generateVscode(loaded: LoadedStack): void {
         const generatedCompounds = generated.compounds || [];
         const existingCompounds = existing.compounds || [];
         const generatedCompoundNames = new Set(generatedCompounds.map((c: any) => c.name));
-        const customCompounds = existingCompounds.filter((c: any) => !generatedCompoundNames.has(c.name) && !String(c.name).startsWith(prefijo));
+        const customCompounds = existingCompounds.filter((c: any) => !generatedCompoundNames.has(c.name) && !esConfigDeOm(String(c.name)));
         generated.compounds = [...generatedCompounds, ...customCompounds];
       }
 
@@ -440,19 +449,20 @@ function generateVscode(loaded: LoadedStack): void {
   const tasksContent = renderVscodeTasks(loaded.stack);
   if (tasksContent) {
     const tasksTarget = join(vscodeDir, 'tasks.json');
-    writeFileSync(tasksTarget, mergeVscodeTasks(tasksTarget, tasksContent, `[${loaded.stack.name}] `));
+    writeFileSync(tasksTarget, mergeVscodeTasks(tasksTarget, tasksContent));
     console.log(`✓ generado ${relative(process.cwd(), tasksTarget)}`);
   }
 }
 
-// Igual que con launch.json: las tasks que no genera om (otro label) se conservan.
-function mergeVscodeTasks(target: string, generatedContent: string, prefijo: string): string {
+// Igual que con launch.json: las tasks hechas a mano (sin el prefijo "[<algo>] "
+// de om) se conservan; las de om viejas se podan aunque cambie el nombre/mode.
+function mergeVscodeTasks(target: string, generatedContent: string): string {
   if (!existsSync(target)) return generatedContent;
   try {
     const existing = JSON.parse(readFileSync(target, 'utf8'));
     const generated = JSON.parse(generatedContent);
     const labels = new Set(generated.tasks.map((t: any) => t.label));
-    const custom = (existing.tasks ?? []).filter((t: any) => t && t.label && !labels.has(t.label) && !String(t.label).startsWith(prefijo));
+    const custom = (existing.tasks ?? []).filter((t: any) => t && t.label && !labels.has(t.label) && !esConfigDeOm(String(t.label)));
     generated.tasks = [...generated.tasks, ...custom];
     const ids = new Set((generated.inputs ?? []).map((i: any) => i.id));
     const customInputs = (existing.inputs ?? []).filter((i: any) => i && i.id && !ids.has(i.id));
